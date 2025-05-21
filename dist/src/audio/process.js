@@ -2,7 +2,6 @@
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Process = void 0;
 const node_child_process_1 = require("node:child_process");
-const node_worker_threads_1 = require("node:worker_threads");
 class Process {
     _process;
     get process() {
@@ -51,8 +50,6 @@ class Process {
 exports.Process = Process;
 let ffmpeg_path = null;
 (async () => {
-    if (!node_worker_threads_1.isMainThread)
-        return;
     for (const name of ["ffmpeg"]) {
         try {
             const result = (0, node_child_process_1.spawnSync)(name, ['-h'], { windowsHide: true });
