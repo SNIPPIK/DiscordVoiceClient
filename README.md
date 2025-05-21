@@ -18,9 +18,10 @@ const config = {
 
 // Голосовое подключение готово
 const voice = new VoiceConnection(config, adapter);
+const audio = new AudioResource("urlOrPathFile", {seek: 10, filters: null});
 
 // Отправка пакетов
-voice.packet = Buffer;
+voice.packet = audio.packet;
 ```
 
 
@@ -223,7 +224,8 @@ const config = {
 
 // Голосовое подключение готово
 const voice = new VoiceConnection(config, adapter);
+const audio = new AudioResource("urlOrPathFile", {seek: 10, filters: null});
 
 // Отправка пакетов
-voice.packet = Buffer;
+voice.packet = audio.packet;
 ```
