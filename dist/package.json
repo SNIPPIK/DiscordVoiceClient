@@ -1,0 +1,25 @@
+{
+    "name": "discord-voice-client",
+    "version": "0.0.1",
+    "homepage": "https://github.com/SNIPPIK/DiscordVoiceClient",
+    "license": "BSD-3-Clause",
+    "main": "build/src/index",
+    "types": "src/index",
+    "preferGlobal": true,
+    "engineStrict": true,
+    "engines": {
+        "node": ">=23.0.0"
+    },
+    "dependencies": {
+        "discord-api-types": "^0.38.8",
+        "ws": "^8.18.2"
+    },
+    "devDependencies": {
+        "@types/node": "^22.15.19",
+        "@types/ws": "^8.18.1",
+        "typescript": "^5.8.3"
+    },
+    "scripts": {
+        "build": "tsc -p tsconfig.json"
+    }
+}
