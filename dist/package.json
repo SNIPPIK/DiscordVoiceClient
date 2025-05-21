@@ -3,7 +3,7 @@
     "version": "0.0.1",
     "homepage": "https://github.com/SNIPPIK/DiscordVoiceClient",
     "license": "BSD-3-Clause",
-    "main": "build/src/index",
+    "main": "dist/src/index",
     "types": "src/index",
     "preferGlobal": true,
     "engineStrict": true,

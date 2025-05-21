@@ -39,7 +39,7 @@ export class Process {
      */
     public constructor(args: string[], name: string = ffmpeg_path) {
         // Выдаем ошибку если нет FFmpeg
-        if (name) throw Error("[Critical] FFmpeg not found!");
+        if (!name) throw Error("[Critical] FFmpeg not found!");
 
         const index_resource = args.indexOf("-i");
         const index_seek = args.indexOf("-ss");
