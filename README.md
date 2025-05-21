@@ -2,6 +2,7 @@
 - Работает на следующих библиотеках (discord.js, seyfert)
 - Нет поддержки плеера, но готовая реализация есть [тут](https://github.com/SNIPPIK/UnTitles)
 - Требуется `FFmpeg`, `Node.js >=23`
+- Используется [`Voice Gateway Version 8`](https://discord.com/developers/docs/topics/voice-connections)
 
 ## Discord.js
 
