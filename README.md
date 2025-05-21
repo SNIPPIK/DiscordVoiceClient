@@ -1,11 +1,20 @@
+[![npm version](https://img.shields.io/npm/v/discord-voice-client)](https://www.npmjs.com/package/discord-voice-client)
+[![license](https://img.shields.io/npm/l/discord-voice-client)](./LICENSE)
+[![downloads](https://img.shields.io/npm/dt/discord-voice-client.svg)](https://www.npmjs.com/package/discord-voice-client)
+
 # Discord voice client
 - Работает на следующих библиотеках (discord.js, seyfert)
 - Нет поддержки плеера, но готовая реализация есть [тут](https://github.com/SNIPPIK/UnTitles)
 - Требуется `FFmpeg`, `Node.js >=23`
 - Используется [`Voice Gateway Version 8`](https://discord.com/developers/docs/topics/voice-connections)
 
-## Discord.js
 
+## 📦 Установка
+```bash
+npm install discord-voice-client
+```
+
+## Discord.js
 ```ts
 import {AudioResource, VoiceConnection} from "discord-voice-client";
 
