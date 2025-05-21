@@ -103,8 +103,6 @@ class VoiceConnection {
         }
         this.websocket = new ClientWebSocket_1.ClientWebSocket(`wss://${endpoint}?v=8`);
         this.websocket.connect();
-        this.websocket.on("debug", console.log);
-        this.websocket.on("warn", console.log);
         this.websocket.on("request_resume", () => {
             this._speaking = false;
             this.websocket.packet = {

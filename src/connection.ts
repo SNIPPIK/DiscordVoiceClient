@@ -207,8 +207,8 @@ export class VoiceConnection {
         this.websocket = new ClientWebSocket(`wss://${endpoint}?v=8`);
         this.websocket.connect();
 
-        this.websocket.on("debug", console.log);
-        this.websocket.on("warn", console.log);
+        //this.websocket.on("debug", console.log);
+        //this.websocket.on("warn", console.log);
 
         // Если websocket требует возобновления подключения
         this.websocket.on("request_resume", () => {
