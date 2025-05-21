@@ -13,7 +13,7 @@ class Process {
     }
     ;
     constructor(args, name = ffmpeg_path) {
-        if (name)
+        if (!name)
             throw Error("[Critical] FFmpeg not found!");
         const index_resource = args.indexOf("-i");
         const index_seek = args.indexOf("-ss");
