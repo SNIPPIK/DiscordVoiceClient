@@ -1,6 +1,7 @@
 # Discord voice client
 - Работает на следующих библиотеках (discord.js, seyfert)
-
+- Нет поддержки плеера, но готовая реализация есть [тут](https://github.com/SNIPPIK/UnTitles)
+- Требуется `FFmpeg`, `Node.js >=23`
 
 ## Discord.js
 
@@ -152,7 +153,7 @@ export interface DiscordGatewayAdapterImplementerMethods {
 export type DiscordGatewayAdapterCreator = ( methods: DiscordGatewayAdapterLibraryMethods) => DiscordGatewayAdapterImplementerMethods;
 ```
 
-- Как использовать реализация voiceAdapterCreator
+- Как использовать реализацию voiceAdapterCreator
 ```ts
 /**
  * @description Реализация клиента discord
