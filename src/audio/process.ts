@@ -1,6 +1,5 @@
 import type {ChildProcessWithoutNullStreams} from "node:child_process"
 import {spawn, spawnSync} from "node:child_process";
-import {isMainThread} from "node:worker_threads";
 
 /**
  * @author SNIPPIK
@@ -100,8 +99,6 @@ let ffmpeg_path = null;
  * @description Делаем проверку на наличие FFmpeg
  */
 (async () => {
-    if (!isMainThread) return;
-
     // Проверяем имена, если есть FFmpeg
     for (const name of ["ffmpeg"]) {
         try {
