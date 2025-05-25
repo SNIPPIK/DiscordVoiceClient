@@ -37,7 +37,6 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
 };
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.ClientRTPSocket = void 0;
-const node_worker_threads_1 = require("node:worker_threads");
 const crypto_1 = __importDefault(require("crypto"));
 const EncryptionModes = [];
 const EncryptionNonce = [];
@@ -106,8 +105,6 @@ class ClientRTPSocket {
 exports.ClientRTPSocket = ClientRTPSocket;
 let loaded_lib = {};
 (async () => {
-    if (!node_worker_threads_1.isMainThread)
-        return;
     if (crypto_1.default.getCiphers().includes("aes-256-gcm")) {
         EncryptionModes.push("aead_aes256_gcm_rtpsize");
         EncryptionNonce.push(Buffer.alloc(12));

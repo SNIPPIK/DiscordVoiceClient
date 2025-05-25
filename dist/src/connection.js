@@ -14,6 +14,10 @@ class VoiceConnection {
     rtpClient;
     speakingTimeout = null;
     _speaking = false;
+    _attention = {
+        ssrc: 0,
+        secret_key: null,
+    };
     set packet(packet) {
         if (this.udpClient && this.rtpClient) {
             this.speaking = true;
@@ -36,9 +40,9 @@ class VoiceConnection {
             d: {
                 speaking: speaking ? 1 : 0,
                 delay: 0,
-                ssrc: this.websocket.ssrc
+                ssrc: this._attention.ssrc
             },
-            seq: this.websocket.seq.last
+            seq: this.websocket.lastAsk
         };
     }
     ;
@@ -50,13 +54,115 @@ class VoiceConnection {
         return this.adapter.packet.server;
     }
     ;
+    set ClientRTP(d) {
+        if (this.rtpClient) {
+            if (d.secret_key === this._attention.secret_key)
+                return;
+            this.rtpClient = null;
+        }
+        this.rtpClient = new ClientRTPSocket_1.ClientRTPSocket({
+            key: new Uint8Array(d.secret_key),
+            ssrc: this._attention.ssrc
+        });
+        this._attention.secret_key = d.secret_key;
+    }
+    ;
+    set ClientUDP(d) {
+        const select_protocol = () => {
+            const { ip, port } = this.udpClient._discovery;
+            this.websocket.packet = {
+                op: voice_1.VoiceOpcodes.SelectProtocol,
+                d: {
+                    protocol: "udp",
+                    data: {
+                        address: ip,
+                        port: port,
+                        mode: ClientRTPSocket_1.ClientRTPSocket.mode
+                    }
+                }
+            };
+        };
+        if (this.udpClient) {
+            this._speaking = false;
+            if (d.ssrc === this._attention?.ssrc)
+                return;
+            this.udpClient.destroy();
+            this.udpClient = null;
+        }
+        this.udpClient = new ClientUDPSocket_1.ClientUDPSocket(d);
+        this.udpClient.discovery(d.ssrc);
+        this.udpClient.on("connected", select_protocol);
+        this.udpClient.on("error", (error) => {
+            this.websocket.emit("warn", `UDP Error: ${error.message}. Reinitializing UDP socket...`);
+        });
+        this._attention.ssrc = d.ssrc;
+    }
+    ;
+    set ClientWS(endpoint) {
+        if (this.websocket) {
+            this.websocket.removeAllListeners();
+            this.websocket.destroy();
+            this.websocket = null;
+        }
+        this.websocket = new ClientWebSocket_1.ClientWebSocket(`wss://${endpoint}?v=8`);
+        this.websocket.connect();
+        this.websocket.on("debug", console.log);
+        this.websocket.on("warn", console.log);
+        this.websocket.on("error", (err) => {
+            this.websocket.emit("close", 4000, err.name);
+        });
+        this.websocket.on("packet", ({ op, d }) => {
+            switch (op) {
+                case voice_1.VoiceOpcodes.SessionDescription: {
+                    this.speaking = false;
+                    this.ClientRTP = d;
+                    break;
+                }
+                case voice_1.VoiceOpcodes.Ready: {
+                    this.ClientUDP = d;
+                    this.resetSpeakingTimeout();
+                    break;
+                }
+            }
+        });
+        this.websocket.on("connect", () => {
+            this.websocket.packet = {
+                op: voice_1.VoiceOpcodes.Identify,
+                d: {
+                    server_id: this.configuration.guild_id,
+                    session_id: this.voiceState.session_id,
+                    user_id: this.voiceState.user_id,
+                    token: this.serverState.token
+                }
+            };
+        });
+        this.websocket.on("request_resume", () => {
+            this.speaking = false;
+            this.websocket.packet = {
+                op: voice_1.VoiceOpcodes.Resume,
+                d: {
+                    server_id: this.configuration.guild_id,
+                    session_id: this.voiceState.session_id,
+                    token: this.serverState.token,
+                    seq_ack: this.websocket.lastAsk
+                }
+            };
+        });
+        this.websocket.on("close", (code, reason) => {
+            if (code === 1000)
+                return this.destroy();
+            this.websocket.emit("debug", `[${code}] ${reason}. Reconstruct...`);
+            this.ClientWS = this.serverState.endpoint;
+        });
+    }
+    ;
     constructor(configuration, adapterCreator) {
         this.configuration = configuration;
         this.adapter.adapter = adapterCreator({
             onVoiceServerUpdate: (packet) => {
                 this.adapter.packet.server = packet;
                 if (packet.endpoint)
-                    this.createClientWebSocket(packet.endpoint);
+                    this.ClientWS = packet.endpoint;
             },
             onVoiceStateUpdate: (packet) => {
                 this.adapter.packet.state = packet;
@@ -70,104 +176,18 @@ class VoiceConnection {
         this.configuration.channel_id = null;
         return this.adapter.sendPayload(this.configuration);
     };
-    createUDPSocket = (d) => {
-        if (this.udpClient) {
-            this.udpClient.destroy();
-            this.udpClient = null;
-        }
-        this.udpClient = new ClientUDPSocket_1.ClientUDPSocket(d);
-        this.udpClient.discovery(d.ssrc);
-        this.udpClient.on("connected", (options) => {
-            this.websocket.packet = {
-                op: voice_1.VoiceOpcodes.SelectProtocol,
-                d: {
-                    protocol: "udp",
-                    data: {
-                        address: options.ip,
-                        port: options.port,
-                        mode: ClientRTPSocket_1.ClientRTPSocket.mode
-                    }
-                }
-            };
-        });
-        this.udpClient.on("error", (error) => {
-            this.websocket.emit("warn", `UDP Error: ${error.message}. Reinitializing UDP socket...`);
-            this.createUDPSocket(d);
-        });
-    };
-    createClientWebSocket = (endpoint) => {
-        if (this.websocket) {
-            this.websocket.removeAllListeners();
-            this.websocket.destroy();
-            this.websocket = null;
-        }
-        this.websocket = new ClientWebSocket_1.ClientWebSocket(`wss://${endpoint}?v=8`);
-        this.websocket.connect();
-        this.websocket.on("request_resume", () => {
-            this._speaking = false;
-            this.websocket.packet = {
-                op: voice_1.VoiceOpcodes.Resume,
-                d: {
-                    server_id: this.configuration.guild_id,
-                    session_id: this.voiceState.session_id,
-                    token: this.serverState.token,
-                    seq_ack: this.websocket.seq.lastAsk
-                }
-            };
-        });
-        this.websocket.on("connect", this.onWSOpen);
-        this.websocket.on("packet", this.onWSPacket);
-        this.websocket.on("close", this.onWSClose);
-    };
-    onWSPacket = ({ op, d }) => {
-        switch (op) {
-            case voice_1.VoiceOpcodes.SessionDescription: {
-                if (this.rtpClient)
-                    this.rtpClient = null;
-                this.rtpClient = new ClientRTPSocket_1.ClientRTPSocket({
-                    key: new Uint8Array(d.secret_key),
-                    ssrc: this.websocket.ssrc
-                });
-                break;
-            }
-            case voice_1.VoiceOpcodes.Ready: {
-                this.createUDPSocket(d);
-                break;
-            }
-        }
-    };
-    onWSClose = (code, reason) => {
-        if (code === 1000)
-            return;
-        this.websocket.emit("debug", `[${code}] ${reason}. Attempting to reconnect...`);
-        this.createClientWebSocket(this.adapter.packet.server.endpoint);
-    };
-    onWSOpen = () => {
-        this._speaking = false;
-        this.websocket.packet = {
-            op: voice_1.VoiceOpcodes.Identify,
-            d: {
-                server_id: this.configuration.guild_id,
-                session_id: this.voiceState.session_id,
-                user_id: this.voiceState.user_id,
-                token: this.serverState.token
-            }
-        };
-    };
     resetSpeakingTimeout = () => {
         if (this.speakingTimeout)
             clearTimeout(this.speakingTimeout);
-        this.speakingTimeout = setTimeout(() => {
-            this.speaking = false;
-        }, 5e3);
+        this.speakingTimeout = setTimeout(() => { this.speaking = false; }, 2e3);
     };
     destroy = () => {
-        if (!this.websocket && !this.udpClient)
-            return;
         if (this.speakingTimeout)
             clearTimeout(this.speakingTimeout);
-        this.websocket.destroy();
-        this.udpClient.destroy();
+        if (this.websocket && this.udpClient) {
+            this.websocket?.destroy();
+            this.udpClient?.destroy();
+        }
         this.rtpClient = null;
         this.websocket = null;
         this.udpClient = null;

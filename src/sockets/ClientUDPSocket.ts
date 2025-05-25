@@ -1,15 +1,13 @@
-
-import {createSocket} from "node:dgram";
-import {TypedEmitter} from "../emitter";
-import {isIPv4} from "node:net";
-
+import { createSocket } from "node:dgram";
+import { TypedEmitter } from "../emitter";
+import { isIPv4 } from "node:net";
 
 /**
  * @author SNIPPIK
  * @description Интервал в миллисекундах, с которым отправляются датаграммы поддержания активности
  * @private
  */
-const ALIVE_INTERVAL = 5e3;
+const ALIVE_INTERVAL = 10e3;
 
 /**
  * @author SNIPPIK
@@ -25,7 +23,12 @@ const MAX_SIZE_VALUE = 2 ** 32 - 1;
  * @public
  */
 export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
+    /**
+     * @description Уничтожен ли класс
+     * @private
+     */
     private destroyed = false;
+
     /**
      * @description Socket UDP подключения
      * @readonly
@@ -54,6 +57,15 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
     private keepAliveCounter = 0;
 
     /**
+     * @description Данные подключения
+     * @public
+     */
+    public _discovery = {
+        ip: null as string,
+        port: 0
+    };
+
+    /**
      * @description Отправка данных на сервер
      * @param packet - Отправляемый пакет
      */
@@ -70,10 +82,18 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
      */
     public constructor(private options: UDPConnection) {
         super();
-
         // Если подключение возвращает ошибки
         this.socket.on("error", async (err) => {
             this.emit("error", err);
+        });
+
+        this.socket.on("listening", () => {
+            try {
+                this.socket.setRecvBufferSize(1024 * 1024); // 1MB
+                this.socket.setSendBufferSize(1024 * 1024);
+            } catch (e) {
+                this.emit("error", new Error("Failed to set socket buffer size: " + e));
+            }
         });
 
         // Если подключение оборвалось
@@ -81,8 +101,15 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
             this.emit("close");
         });
 
+        this.socket.bind(); // обязательный вызов для активации сокета
+
         // Запускаем интервал
-        this.keepAliveInterval = setInterval(this.keepAlive, ALIVE_INTERVAL);
+        this.keepAliveInterval = setInterval(() => {
+            if (this.keepAliveCounter > MAX_SIZE_VALUE) this.keepAliveCounter = 0;
+
+            this.keepAliveBuffer.writeUInt32BE(this.keepAliveCounter++, 0);
+            this.packet = this.keepAliveBuffer;
+        }, ALIVE_INTERVAL);
     };
 
     /**
@@ -104,6 +131,7 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
                     return;
                 }
 
+                this._discovery = { ip, port }
                 this.emit("connected", { ip, port });
             }
         });
@@ -120,19 +148,6 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
         packet.writeUInt32BE(ssrc, 4);
 
         return packet;
-    };
-
-    /**
-     * @description Функция для предотвращения разрыва UDP подключения
-     * @private
-     */
-    private keepAlive = () => {
-        this.packet = this.keepAliveBuffer;
-        this.keepAliveCounter++;
-
-        if (this.keepAliveCounter > MAX_SIZE_VALUE) {
-            this.keepAliveCounter = 0;
-        }
     };
 
     /**

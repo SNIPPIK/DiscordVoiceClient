@@ -1,4 +1,3 @@
-import {isMainThread} from "node:worker_threads";
 import crypto from "crypto";
 
 /**
@@ -99,9 +98,6 @@ export class ClientRTPSocket {
         // SSRC
         rtp_packet.writeUInt32BE(this.options.ssrc, 8);
 
-        // Зашифрованный звук
-        //rtp_packet.copy(Buffer.alloc(32), 0, 0, 12);
-
         return rtp_packet;
     };
 
@@ -178,8 +174,6 @@ let loaded_lib: Methods.current = {};
  * @description Делаем проверку на наличие поддержки sodium
  */
 (async () => {
-    if (!isMainThread) return;
-
     // Если поддерживается нативная расшифровка
     if (crypto.getCiphers().includes("aes-256-gcm")) {
         EncryptionModes.push("aead_aes256_gcm_rtpsize");
