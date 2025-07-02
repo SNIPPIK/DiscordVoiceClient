@@ -4,30 +4,45 @@ exports.ClientUDPSocket = void 0;
 const node_dgram_1 = require("node:dgram");
 const emitter_1 = require("../emitter");
 const node_net_1 = require("node:net");
-const ALIVE_INTERVAL = 10e3;
 const MAX_SIZE_VALUE = 2 ** 32 - 1;
 class ClientUDPSocket extends emitter_1.TypedEmitter {
-    options;
+    isConnected = false;
     destroyed = false;
-    socket = (0, node_dgram_1.createSocket)({ type: "udp4" });
-    keepAliveInterval;
-    keepAliveBuffer = Buffer.alloc(4);
-    keepAliveCounter = 0;
-    _discovery = {
-        ip: null,
-        port: 0
+    socket;
+    keepAlive = {
+        interval: null,
+        intervalMs: 0,
+        timeout: null,
+        buffer: Buffer.alloc(4),
+        counter: 0
     };
+    options;
     set packet(packet) {
         this.socket.send(packet, 0, packet.length, this.options.port, this.options.ip, (err) => {
             if (err)
                 this.emit("error", err);
         });
+        this.resetKeepAliveInterval();
     }
     ;
-    constructor(options) {
-        super();
+    get connected() {
+        return this.isConnected;
+    }
+    ;
+    connect = (options) => {
+        this.keepAlive.intervalMs = options.heartbeat_interval;
+        if (this.options !== undefined) {
+            if (options.ip === this.options.ip && options.port === this.options.port && options.ssrc === this.options.ssrc)
+                return;
+            this.removeAllListeners();
+        }
         this.options = options;
-        this.socket.on("error", async (err) => {
+        if ((0, node_net_1.isIPv4)(options.ip))
+            this.socket = (0, node_dgram_1.createSocket)("udp4");
+        else
+            this.socket = (0, node_dgram_1.createSocket)("udp6");
+        this.discovery(options.ssrc);
+        this.socket.on("error", (err) => {
             this.emit("error", err);
         });
         this.socket.on("listening", () => {
@@ -39,18 +54,12 @@ class ClientUDPSocket extends emitter_1.TypedEmitter {
                 this.emit("error", new Error("Failed to set socket buffer size: " + e));
             }
         });
-        this.socket.on("close", async () => {
+        this.socket.on("close", () => {
+            this.isConnected = false;
             this.emit("close");
         });
-        this.socket.bind();
-        this.keepAliveInterval = setInterval(() => {
-            if (this.keepAliveCounter > MAX_SIZE_VALUE)
-                this.keepAliveCounter = 0;
-            this.keepAliveBuffer.writeUInt32BE(this.keepAliveCounter++, 0);
-            this.packet = this.keepAliveBuffer;
-        }, ALIVE_INTERVAL);
-    }
-    ;
+        this.manageKeepAlive();
+    };
     discovery = (ssrc) => {
         this.packet = this.discoveryBuffer(ssrc);
         this.socket.once("message", (message) => {
@@ -62,32 +71,56 @@ class ClientUDPSocket extends emitter_1.TypedEmitter {
                     this.emit("error", Error("Not found IPv4 address"));
                     return;
                 }
-                this._discovery = { ip, port };
+                this.isConnected = true;
                 this.emit("connected", { ip, port });
             }
         });
-    };
-    discoveryBuffer = (ssrc) => {
-        const packet = Buffer.alloc(74);
-        packet.writeUInt16BE(1, 0);
-        packet.writeUInt16BE(70, 2);
-        packet.writeUInt32BE(ssrc, 4);
-        return packet;
     };
     destroy = () => {
         if (this.destroyed)
             return;
         this.destroyed = true;
-        clearInterval(this.keepAliveInterval);
+        clearInterval(this.keepAlive.interval);
+        clearTimeout(this.keepAlive.timeout);
+        this.socket.removeAllListeners();
+        this.removeAllListeners();
+        this.keepAlive = null;
+        this.destroyed = null;
         try {
-            this.socket.close();
+            this.socket.disconnect?.();
+            this.socket.close?.();
         }
         catch (err) {
             if (err instanceof Error && err.message.includes("Not running"))
                 return;
         }
-        this.socket.removeAllListeners();
-        this.removeAllListeners();
+        this.socket = null;
+    };
+    discoveryBuffer = (ssrc) => {
+        const packet = Buffer.allocUnsafe(74);
+        packet.writeUInt16BE(1, 0);
+        packet.writeUInt16BE(70, 2);
+        packet.writeUInt32BE(ssrc, 4);
+        return packet;
+    };
+    manageKeepAlive = () => {
+        if (this.keepAlive.interval)
+            clearInterval(this.keepAlive.interval);
+        if (this.keepAlive.timeout)
+            clearTimeout(this.keepAlive.timeout);
+        this.keepAlive.interval = setInterval(() => {
+            if (this.keepAlive.counter > MAX_SIZE_VALUE)
+                this.keepAlive.counter = 0;
+            this.keepAlive.buffer.writeUInt32BE(this.keepAlive.counter++, 0);
+            this.packet = this.keepAlive.buffer;
+        }, this.keepAlive.intervalMs);
+    };
+    resetKeepAliveInterval = () => {
+        if (this.keepAlive.interval)
+            clearInterval(this.keepAlive.interval);
+        if (this.keepAlive.timeout)
+            clearTimeout(this.keepAlive.timeout);
+        this.keepAlive.timeout = setTimeout(() => this.manageKeepAlive(), 2e3);
     };
 }
 exports.ClientUDPSocket = ClientUDPSocket;

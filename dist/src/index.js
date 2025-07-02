@@ -16,8 +16,9 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", { value: true });
 __exportStar(require("./sockets/ClientWebSocket"), exports);
 __exportStar(require("./sockets/ClientUDPSocket"), exports);
-__exportStar(require("./sockets/ClientRTPSocket"), exports);
+__exportStar(require("./sockets/ClientSRTPSocket"), exports);
 __exportStar(require("./audio/resource"), exports);
 __exportStar(require("./audio/process"), exports);
 __exportStar(require("./audio/opus"), exports);
 __exportStar(require("./connection"), exports);
+__exportStar(require("./tools/cycle"), exports);

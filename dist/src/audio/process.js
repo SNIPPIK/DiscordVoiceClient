@@ -9,7 +9,7 @@ class Process {
     }
     ;
     get stdout() {
-        return this?.process?.stdout ?? null;
+        return this?._process?.stdout ?? null;
     }
     ;
     constructor(args, name = ffmpeg_path) {
@@ -40,8 +40,8 @@ class Process {
                 std.removeAllListeners();
                 std.destroy();
             }
-            this.process.ref();
-            this.process.removeAllListeners();
+            this._process.ref();
+            this._process.removeAllListeners();
             this._process.kill("SIGKILL");
             this._process = null;
         }

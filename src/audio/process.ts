@@ -29,13 +29,14 @@ export class Process {
      * @public
      */
     public get stdout() {
-        return this?.process?.stdout ?? null;
+        return this?._process?.stdout ?? null;
     };
 
     /**
      * @description Задаем параметры и запускаем процесс
      * @param args {string[]} Аргументы для запуска
      * @param name {string} Имя процесса
+     * @public
      */
     public constructor(args: string[], name: string = ffmpeg_path) {
         // Выдаем ошибку если нет FFmpeg
@@ -79,8 +80,8 @@ export class Process {
                 std.destroy();
             }
 
-            this.process.ref();
-            this.process.removeAllListeners();
+            this._process.ref();
+            this._process.removeAllListeners();
             this._process.kill("SIGKILL");
             this._process = null;
         }

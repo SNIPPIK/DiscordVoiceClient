@@ -1,59 +1,99 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.WebSocketCloseCodes = exports.ClientWebSocket = void 0;
+const heartbeat_1 = require("../managers/heartbeat");
 const voice_1 = require("discord-api-types/voice");
+const undici_1 = require("undici");
 const emitter_1 = require("../emitter");
-const ws_1 = require("ws");
 class ClientWebSocket extends emitter_1.TypedEmitter {
     endpoint;
-    _client;
-    heartbeat = {
-        interval: null,
-        timeout: null,
-        intervalMs: null,
-        timeoutMs: 5e3,
-        reconnects: 0,
-        miss: 0
-    };
-    lastAsk = 0;
-    get ready() {
-        return !!this._client && this._client?.readyState === ws_1.WebSocket.OPEN;
+    isConnecting;
+    heartbeat;
+    ws;
+    lastAsk = -1;
+    get connected() {
+        return this.ws?.readyState === undici_1.WebSocket.OPEN || this.ws?.readyState === undici_1.WebSocket.CONNECTING;
     }
     ;
     set packet(payload) {
-        if (this._client?.readyState && this._client?.readyState === ws_1.WebSocket.OPEN) {
-            try {
-                this._client.send(JSON.stringify(payload));
+        this.emit("debug", `[WebSocket/send:]`, payload);
+        if (!this.connected)
+            return;
+        try {
+            this.ws.send(JSON.stringify(payload));
+        }
+        catch (err) {
+            if (`${err}`.match(/Cannot read properties of null/)) {
+                this.connect(this.endpoint);
+                return;
             }
-            catch (e) {
-                this.emit("error", new Error(`${e}`));
-            }
+            this.emit("error", err instanceof Error ? err : new Error(String(err)));
         }
     }
     ;
-    constructor(endpoint) {
+    constructor() {
         super();
-        this.endpoint = endpoint;
-    }
-    ;
-    connect = () => {
-        if (this._client)
-            this.destroyWs();
-        this._client = new ws_1.WebSocket(this.endpoint, {
-            handshakeTimeout: 7e3,
-            headers: {
-                "User-Agent": "VoiceClient (https://github.com/SNIPPIK/UnTitles/tree/beta/src/services/voice)"
+        this.heartbeat = new heartbeat_1.HeartbeatManager({
+            send: () => {
+                this.packet = {
+                    op: voice_1.VoiceOpcodes.Heartbeat,
+                    d: {
+                        t: Date.now(),
+                        seq_ack: this.lastAsk
+                    }
+                };
+            },
+            onTimeout: () => {
+                if (this.heartbeat.missed >= 3) {
+                    this.emit("warn", "HEARTBEAT_ACK timeout x3, reconnecting...");
+                    this.attemptReconnect();
+                }
+                else {
+                    this.emit("warn", "HEARTBEAT_ACK not received in time");
+                }
+            },
+            onAck: (latency) => {
+                this.lastAsk++;
+                this.emit("debug", `HEARTBEAT_ACK received. Latency: ${latency} ms`);
             }
         });
-        this._client.on("open", () => this.emit("connect"));
-        this._client.on("message", this.onMessage);
-        this._client.on("close", this.onClose);
-        this._client.on("error", err => this.emit("error", err));
+    }
+    ;
+    connect = (endpoint) => {
+        if (this.isConnecting)
+            return;
+        this.isConnecting = true;
+        if (this.ws)
+            this.reset();
+        this.endpoint = endpoint;
+        this.ws = new undici_1.WebSocket(`${endpoint}?v=8`);
+        this.ws.onmessage = this.onEventMessage;
+        this.ws.onopen = () => {
+            this.isConnecting = false;
+            this.emit("open");
+        };
+        this.ws.onclose = (ev) => {
+            this.isConnecting = false;
+            this.onEventClose(ev.code, ev.reason);
+        };
+        this.ws.onerror = ({ error }) => {
+            this.isConnecting = false;
+            this.emit("warn", error);
+            if (`${error}`.match(/cloused before the connection/)) {
+                this.emit("close", 4006, "WebSocket has over destroyed: Repeat!");
+                return;
+            }
+            else if (`${error}`.match(/handshake has timed out/)) {
+                this.destroy();
+                return;
+            }
+            this.emit("error", error);
+        };
     };
-    onMessage = (data) => {
+    onEventMessage = (data) => {
         let payload;
         try {
-            payload = JSON.parse(data.toString());
+            payload = JSON.parse(data.data.toString());
         }
         catch {
             this.emit("error", new Error('Invalid JSON'));
@@ -62,18 +102,15 @@ class ClientWebSocket extends emitter_1.TypedEmitter {
         const { op, d } = payload;
         switch (op) {
             case voice_1.VoiceOpcodes.Hello: {
-                this.manageHeartbeat(d.heartbeat_interval);
-                this.heartbeat.intervalMs = d.heartbeat_interval;
+                this.heartbeat.start(d.heartbeat_interval);
                 break;
             }
             case voice_1.VoiceOpcodes.HeartbeatAck: {
-                this.lastAsk++;
-                this.handleHeartbeatAck(d.t);
+                this.heartbeat.ack();
                 break;
             }
             case voice_1.VoiceOpcodes.Resumed: {
-                this.heartbeat.reconnects = 0;
-                this.manageHeartbeat();
+                this.heartbeat.start();
                 break;
             }
             case voice_1.VoiceOpcodes.ClientDisconnect: {
@@ -81,105 +118,58 @@ class ClientWebSocket extends emitter_1.TypedEmitter {
                 break;
             }
             case voice_1.VoiceOpcodes.Ready: {
-                this.emit("packet", payload);
-                this.heartbeat.reconnects = 0;
+                this.emit("ready", payload);
+                this.heartbeat.resetReconnects();
                 break;
             }
-            default: this.emit("packet", payload);
+            case voice_1.VoiceOpcodes.SessionDescription: {
+                this.emit("sessionDescription", payload);
+                break;
+            }
         }
-        this.emit("debug", payload);
+        this.emit("debug", `[WebSocket/get:]`, payload);
     };
-    onClose = (code, reason) => {
-        const reconnectCodes = [4001];
-        const recreateCodes = [1006];
-        const exitCodes = [1000, 1001, 4006];
-        const ignoreCodes = [4014];
-        this.emit("debug", `Close: ${code} - ${reason}`);
-        if (recreateCodes.includes(code)) {
-            this.attemptReconnect(true);
+    onEventClose = (code, reason) => {
+        const ignoreCodes = [4014, 4022];
+        const notReconnect = [4006, 1000, 1002];
+        this.emit("debug", `[WebSocket/close]: ${code} - ${reason}`);
+        if (ignoreCodes.includes(code))
             return;
+        else if (this.connected && !notReconnect.includes(code)) {
+            if (code < 4000 || code === 4015) {
+                this.attemptReconnect();
+                return;
+            }
         }
-        else if (reconnectCodes.includes(code)) {
-            this.attemptReconnect();
-            return;
-        }
-        else if (exitCodes.includes(code)) {
-            this.emit("close", 1000, reason);
-            this.destroy();
-            return;
-        }
-        else if (ignoreCodes.includes(code))
-            return;
         this.emit("close", code, reason);
     };
     attemptReconnect = (reconnect) => {
-        if (this.heartbeat.interval)
-            clearInterval(this.heartbeat.interval);
-        if (this.heartbeat.timeout)
-            clearTimeout(this.heartbeat.timeout);
-        if (reconnect || this.heartbeat.reconnects >= 3) {
+        this.heartbeat.stop();
+        if (reconnect || this.heartbeat.reconnectAttempts >= 3) {
             this.emit("debug", `Reconnecting...`);
-            this.connect();
+            this.connect(this.endpoint);
             return;
         }
-        this.heartbeat.reconnects++;
-        const delay = Math.min(1000 * this.heartbeat.reconnects, 5000);
+        this.heartbeat.increaseReconnect();
+        const delay = Math.min(1000 * this.heartbeat.reconnectAttempts, 5000);
         setTimeout(() => {
-            this.emit("debug", `Reconnecting... Attempt ${this.heartbeat.reconnects}`);
-            this.emit("request_resume");
+            this.emit("debug", `Reconnecting... Attempt ${this.heartbeat.reconnectAttempts}`);
+            this.emit("resumed");
         }, delay);
     };
-    startHeartbeatTimeout = () => {
-        if (this.heartbeat.timeout)
-            clearTimeout(this.heartbeat.timeout);
-        this.heartbeat.timeout = setTimeout(() => {
-            if (this.heartbeat.miss >= 2)
-                this.attemptReconnect(false);
-            this.emit("warn", "HEARTBEAT_ACK not received within timeout");
-            this.heartbeat.miss++;
-        }, this.heartbeat.timeoutMs);
-    };
-    manageHeartbeat(intervalMs) {
-        if (this.heartbeat.interval)
-            clearInterval(this.heartbeat.interval);
-        if (intervalMs !== 0)
-            this.heartbeat.intervalMs = intervalMs;
-        this.heartbeat.interval = setInterval(() => {
-            this.packet = {
-                op: voice_1.VoiceOpcodes.Heartbeat,
-                d: {
-                    t: Date.now(),
-                    seq_ack: this.lastAsk
-                }
-            };
-            this.startHeartbeatTimeout();
-        }, this.heartbeat.intervalMs);
-    }
-    ;
-    handleHeartbeatAck = (ackData) => {
-        this.emit("debug", `HEARTBEAT_ACK received. Latency: ${Date.now() - ackData} ms`);
-        this.heartbeat.miss = 0;
-        if (this.heartbeat.timeout) {
-            clearTimeout(this.heartbeat.timeout);
-            this.heartbeat.timeout = null;
+    reset = () => {
+        if (this.ws) {
+            this.removeAllListeners();
+            if (this.connected)
+                this.ws.close(1_000);
         }
-    };
-    destroyWs = () => {
-        this._client?.removeAllListeners();
-        if (this.ready) {
-            this._client?.close(1000);
-            this.emit("close", 1000, "Normal closing");
-        }
-        this._client?.terminate();
-        this._client = null;
+        this.ws = null;
+        this.lastAsk = 0;
+        this.heartbeat.stop();
     };
     destroy = () => {
-        this.destroyWs();
-        this.removeAllListeners();
-        if (this.heartbeat.timeout)
-            clearTimeout(this.heartbeat.timeout);
-        if (this.heartbeat.interval)
-            clearTimeout(this.heartbeat.interval);
+        this.reset();
+        this.lastAsk = null;
     };
 }
 exports.ClientWebSocket = ClientWebSocket;
@@ -187,6 +177,7 @@ var WebSocketCloseCodes;
 (function (WebSocketCloseCodes) {
     WebSocketCloseCodes[WebSocketCloseCodes["NORMAL_CLOSURE"] = 1000] = "NORMAL_CLOSURE";
     WebSocketCloseCodes[WebSocketCloseCodes["GOING_AWAY"] = 1001] = "GOING_AWAY";
+    WebSocketCloseCodes[WebSocketCloseCodes["EXIT_RESULT"] = 1002] = "EXIT_RESULT";
     WebSocketCloseCodes[WebSocketCloseCodes["ABNORMAL_CLOSURE"] = 1006] = "ABNORMAL_CLOSURE";
     WebSocketCloseCodes[WebSocketCloseCodes["UNKNOWN_OPCODE"] = 4001] = "UNKNOWN_OPCODE";
     WebSocketCloseCodes[WebSocketCloseCodes["DECODE_ERROR"] = 4002] = "DECODE_ERROR";
@@ -201,4 +192,5 @@ var WebSocketCloseCodes;
     WebSocketCloseCodes[WebSocketCloseCodes["INSUFFICIENT_RESOURCES"] = 4015] = "INSUFFICIENT_RESOURCES";
     WebSocketCloseCodes[WebSocketCloseCodes["OVERLOADED"] = 4016] = "OVERLOADED";
     WebSocketCloseCodes[WebSocketCloseCodes["BAD_REQUEST"] = 4020] = "BAD_REQUEST";
+    WebSocketCloseCodes[WebSocketCloseCodes["Session_Expired"] = 4022] = "Session_Expired";
 })(WebSocketCloseCodes || (exports.WebSocketCloseCodes = WebSocketCloseCodes = {}));

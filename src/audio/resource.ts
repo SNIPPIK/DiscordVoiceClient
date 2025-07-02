@@ -1,10 +1,11 @@
-import {OpusEncoder, SILENT_FRAME} from "./opus";
-import {TypedEmitter} from "../emitter";
-import {Process} from "./process";
+import { PipeEncoder, BufferedEncoder, SILENT_FRAME, OPUS_FRAME_SIZE } from "./opus";
+import { TypedEmitter } from "../emitter";
+import { Process } from "./process";
 
 /**
  * @author SNIPPIK
  * @description Класс для хранения аудио фреймов потока, для повторного использования
+ * @usage Использовать только для треков не более 8 мин
  * @class AudioBuffer
  * @private
  */
@@ -60,9 +61,9 @@ class AudioBuffer {
      * @public
      */
     public get packet() {
-        if (this.position >= this.size) return null;
+        if (this._position >= this.size) return null;
         const frame = this._chunks[this._position++];
-        return frame ?? null;
+        return frame ?? SILENT_FRAME;
     };
 
     /**
@@ -72,28 +73,129 @@ class AudioBuffer {
     public clear = () => {
         // Удаляем ссылки на буферы
         this._chunks.length = 0;
+        this._position = null;
     };
 }
 
 /**
  * @author SNIPPIK
- * @description Конвертирует ссылку или путь до файла в чистый opus для работы с discord
- * @class AudioResource
- * @public
+ * @description Базовый класс для создания аудио
+ * @class BaseAudioResource
+ * @extends TypedEmitter<AudioResourceEvents>
+ * @abstract
  */
-export class AudioResource extends TypedEmitter<AudioResourceEvents> {
+abstract class BaseAudioResource extends TypedEmitter<AudioResourceEvents> {
     /**
-     * @description Список аудио буферов, для временного хранения
+     * @description Можно ли читать поток
      * @protected
-     * @readonly
      */
-    private readonly _buffer = new AudioBuffer();
+    protected _readable = false;
 
     /**
      * @description Параметр seek, для вычисления времени проигрывания
      * @protected
      */
     protected _seek = 0;
+
+    /**
+     * @description Если чтение возможно
+     * @public
+     */
+    public get readable(): boolean {
+        return this._readable;
+    };
+
+    /**
+     * @description Duration в секундах с учётом текущей позиции в буфере и seek-а (предыдущего смещения)
+     * @public
+     */
+    public get duration() {
+        return 0;
+    };
+
+    /**
+     * @description Выдаем фрагмент потока или пустышку
+     * @help (время пакета 20ms)
+     * @return Buffer
+     * @public
+     */
+    public get packet(): Buffer {
+        return SILENT_FRAME;
+    };
+
+    /**
+     * @description Оставшееся кол-во пакетов
+     * @help (время пакета 20ms)
+     * @public
+     */
+    public get packets(): number {
+        return 0;
+    };
+
+    /**
+     * @description Создаем класс и задаем параметры
+     * @protected
+     */
+    protected constructor({options}: AudioResourceOptions) {
+        super();
+
+        if (options?.seek > 0) this._seek = (options.seek * 1e3) / OPUS_FRAME_SIZE;
+    };
+
+    /**
+     * @description Подключаем поток к ffmpeg
+     * @param options - Параметры для запуска
+     * @protected
+     */
+    protected input<T>(options: AudioResourceInput<T>) {
+        // Запускаем все события
+        for (const event of options.events.destroy) {
+            const path = options.events.path ? options.input[options.events.path] : options.input;
+
+            // Запускаем прослушивание события
+            path["once"](event, (err: any) => {
+                if (event === "error") this.emit("error", new Error(`AudioResource get ${err}`));
+                options.events.destroy_callback(options.input);
+            });
+        }
+
+        // Разовая функция для удаления потока
+        this.once("close", options.events.destroy_callback.bind(this, options.input));
+
+        return options.decode(options.input);
+    };
+
+    /**
+     * @description Удаляем ненужные данные
+     * @protected
+     */
+    protected _destroy = () => {
+        // Чистим все потоки от мусора
+        this.emit("close");
+
+        // Удаляем все вызовы функций
+        this.removeAllListeners();
+
+        this._readable = null;
+        this._seek = null;
+    };
+}
+
+/**
+ * @author SNIPPIK
+ * @description Конвертирует ссылку или путь до файла в чистый opus для работы с discord
+ * @usage Только для треков, до 8 мин!
+ * @class BufferedAudioResource
+ * @extends BaseAudioResource
+ * @public
+ */
+export class BufferedAudioResource extends BaseAudioResource {
+    /**
+     * @description Список аудио буферов, для временного хранения
+     * @protected
+     * @readonly
+     */
+    private readonly _buffer = new AudioBuffer();
 
     /**
      * @description Если чтение возможно
@@ -109,11 +211,12 @@ export class AudioResource extends TypedEmitter<AudioResourceEvents> {
      */
     public get duration() {
         if (!this._buffer.position) return 0;
-        return Math.abs(((this._seek - this._buffer.position) * 20) / 1e3);
+        return Math.abs((((this._buffer.position + this._seek) * OPUS_FRAME_SIZE) / 1e3));
     };
 
     /**
      * @description Выдаем фрагмент потока или пустышку
+     * @help (время пакета 20ms)
      * @return Buffer
      * @public
      */
@@ -122,52 +225,12 @@ export class AudioResource extends TypedEmitter<AudioResourceEvents> {
     };
 
     /**
-     * @description Подключаем поток к ffmpeg
-     * @param options - Параметры для запуска
-     * @private
+     * @description Оставшееся кол-во пакетов
+     * @help (время пакета 20ms)
+     * @public
      */
-    private set input(options: AudioResourceInput) {
-        // Запускаем все события
-        for (const event of options.events.destroy) {
-            const path = options.events.path ? options.input[options.events.path] : options.input;
-
-            // Запускаем прослушивание события
-            path["once"](event, (err: any) => {
-                if (event === "error") this.emit("error", new Error(`AudioResource get ${err}`));
-                options.events.destroy_callback(options.input);
-            });
-        }
-
-        // Разовая функция для удаления потока
-        this.once("close", () => {
-            options.events.destroy_callback(options.input);
-        });
-
-        // Если вводимый поток является расшифровщиком
-        if (options.input instanceof Process) options.input.stdout.pipe(options.decoder);
-        else {
-            // Если поток нельзя читать, возможно что он еще грузится
-            const timeout = setTimeout(() => {
-                // Отправляем данные событию для отображения ошибки
-                this.emit("error", new Error("Timeout: the stream has been exceeded!"));
-                // Начинаем уничтожение потока
-                this.emit("close");
-            }, 15e3);
-
-            options.input.on("frame", (packet: Buffer) => {
-                // Сообщаем что поток можно начать читать
-                if (this._buffer.size === 0) {
-                    clearTimeout(timeout);
-                    this.emit("readable");
-
-                    // Если поток включается в первый раз.
-                    // Добавляем пустышку для интерпретатора opus
-                    if (!this._seek) this._buffer.packet = SILENT_FRAME;
-                }
-
-                this._buffer.packet = packet;
-            });
-        }
+    public get packets(): number {
+        return this._buffer.size - this._buffer.position;
     };
 
     /**
@@ -177,48 +240,52 @@ export class AudioResource extends TypedEmitter<AudioResourceEvents> {
      * @example <path> or <url>
      */
     public constructor(public config: AudioResourceOptions) {
-        super();
-        const {path, options} = config;
-        if (options?.seek > 0) this._seek = (options.seek * 1e3) / 20;
+        super(config);
 
-        const decoder = new OpusEncoder();
+        const {path, options} = config;
+        const decoder = new BufferedEncoder({
+            highWaterMark: 512 * 5
+        });
 
         // Расшифровщик
-        this.input = {
-            // Управление событиями
-            events: {
-                destroy: ["end", "close", "error"],
-                destroy_callback: (input) => {
-                    // Если поток еще существует
-                    if (input) {
-                        input.destroy();
-
-                        // Добавляем пустышку для интерпретатора opus
-                        this._buffer.packet = SILENT_FRAME;
-                    }
-
-                    this.emit("end");
-                }
-            },
+        this.input<BufferedEncoder>({
             // Создание потока
-            input: decoder
-        };
+            input: decoder,
 
-        // Процесс (FFmpeg)
-        this.input = {
-            decoder,
             // Управление событиями
             events: {
-                path: "stdout",
-
                 destroy: ["end", "close", "error"],
                 destroy_callback: (input) => {
                     // Если поток еще существует
                     if (input) input.destroy();
-
                     this.emit("end");
-                },
+                }
             },
+
+            // Начало кодирования
+            decode: (input) => {
+                // Если поток нельзя читать, возможно что он еще грузится
+                const timeout = setTimeout(() => {
+                    // Отправляем данные событию для отображения ошибки
+                    this.emit("error", new Error("Timeout: the stream has been exceeded!"));
+                    // Начинаем уничтожение потока
+                    this.emit("close");
+                }, 15e3);
+
+                input.on("frame", (packet: Buffer) => {
+                    // Сообщаем что поток можно начать читать
+                    if (this._buffer.size === 0) {
+                        clearTimeout(timeout);
+                        this.emit("readable");
+                    }
+
+                    this._buffer.packet = packet;
+                });
+            }
+        });
+
+        // Процесс (FFmpeg)
+        this.input<Process>({
             // Создание потока
             input: new Process([
                 // Пропуск времени
@@ -231,16 +298,31 @@ export class AudioResource extends TypedEmitter<AudioResourceEvents> {
                 "-af", options.filters,
 
                 // Указываем формат аудио (ogg/opus)
-                "-c:a", "libopus",
+                "-acodec", "libopus",
+                "-frame_duration", "20",
                 "-f", "opus",
-                "-application", "audio",
-
-                "-ar", "48000",
-                "-ac", "2",
 
                 "pipe:"
-            ])
-        };
+            ]),
+
+            // Управление событиями
+            events: {
+                path: "stdout",
+
+                destroy: ["end", "close", "error"],
+                destroy_callback: (input) => {
+                    // Если поток еще существует
+                    if (input) input.destroy();
+
+                    this.emit("end");
+                },
+            },
+
+            // Начало кодирования
+            decode: (input: Process) => {
+                input.stdout.pipe(decoder);
+            },
+        });
     };
 
     /**
@@ -257,15 +339,161 @@ export class AudioResource extends TypedEmitter<AudioResourceEvents> {
      * @public
      */
     public destroy = () => {
-        // Чистим все потоки от мусора
-        this.emit("close");
-
         this._buffer.clear();
-
-        // Удаляем все вызовы функций
-        this.removeAllListeners();
+        this._destroy();
     };
 }
+
+/**
+ * @author SNIPPIK
+ * @description Конвертирует ссылку или путь до файла в чистый opus для работы с discord
+ * @usage Можно использовать любой тип аудио, хоть 20 часов
+ * @class PipeAudioResource
+ * @extends BaseAudioResource
+ * @public
+ */
+export class PipeAudioResource extends BaseAudioResource {
+    /**
+     * @description Реал тайм декодер opus фрагментов
+     * @private
+     */
+    private encoder = new PipeEncoder({
+        highWaterMark: 512 * 5
+    });
+
+    /**
+     * @description Кол-во проигранных пакетов
+     * @private
+     */
+    private played = 0;
+
+    /**
+     * @description Выдаем фрагмент потока или пустышку
+     * @return Buffer
+     * @public
+     */
+    public get packet(): Buffer {
+        const packet = this.encoder.read();
+
+        // Если есть аудио пакеты
+        if (packet) this.played++;
+
+        // Отправляем пакет
+        return packet;
+    };
+
+    /**
+     * @description Оставшееся кол-во пакетов
+     * @help (время пакета 20ms)
+     * @public
+     */
+    public get packets(): number {
+        return this.encoder.writableLength / OPUS_FRAME_SIZE;
+    };
+
+    /**
+     * @description Получаем время, время зависит от прослушанных пакетов
+     * @public
+     */
+    public get duration() {
+        return (this._seek + this.played * OPUS_FRAME_SIZE) / 1e3;
+    };
+
+    /**
+     * @description Создаем класс и задаем параметры
+     * @param config - Настройки кодировщика
+     * @public
+     */
+    public constructor(config: AudioResourceOptions) {
+        super(config);
+        const {path, options} = config;
+
+        // Расшифровщик
+        this.input<PipeEncoder>({
+            // Создание потока
+            input: this.encoder,
+
+            // Управление событиями
+            events: {
+                destroy: ["end", "close", "error"],
+                destroy_callback: (input) => {
+                    // Если поток еще существует
+                    if (input) input.destroy();
+                    this.emit("end");
+                }
+            },
+
+            // Начало кодирования
+            decode: (input) => {
+                // Если поток нельзя читать, возможно что он еще грузится
+                const timeout = setTimeout(() => {
+                    // Отправляем данные событию для отображения ошибки
+                    this.emit("error", new Error("Timeout: the stream has been exceeded!"));
+                    // Начинаем уничтожение потока
+                    this.emit("close");
+                }, 15e3);
+
+                input.once("readable", () => {
+                    clearTimeout(timeout);
+                    this._readable = true;
+                    this.emit("readable");
+                });
+            }
+        });
+
+        // Процесс (FFmpeg)
+        this.input<Process>({
+            // Создание потока
+            input: new Process([
+                // Пропуск времени
+                "-ss", `${options.seek ?? 0}`,
+
+                // Файл или ссылка на ресурс
+                "-i", path,
+
+                // Подключаем фильтры
+                "-af", options.filters,
+
+                // Указываем формат аудио (ogg/opus)
+                "-acodec", "libopus",
+                "-frame_duration", "20",
+                "-f", "opus",
+
+                "pipe:"
+            ]),
+
+            // Управление событиями
+            events: {
+                path: "stdout",
+                destroy: ["end", "close", "error"],
+                destroy_callback: (input) => {
+                    // Если поток еще существует
+                    if (input) input.destroy();
+                    this.emit("end");
+                },
+            },
+
+            // Начало кодирования
+            decode: (input) => {
+                input.stdout.pipe(this.encoder);
+            },
+        });
+    };
+
+    /**
+     * @description Удаляем ненужные данные
+     * @public
+     */
+    public destroy = () => {
+        this.played = null;
+        this.encoder = null;
+
+        this._destroy();
+    };
+}
+
+
+
 
 /**
  * @author SNIPPIK
@@ -316,18 +544,12 @@ interface AudioResourceEvents {
  * @description Параметры для функции совмещения потоков
  * @interface AudioResourceInput
  */
-interface AudioResourceInput {
+interface AudioResourceInput<T> {
     /**
      * @description Входящий поток
      * @readonly
      */
-    readonly input: OpusEncoder | Process;
-
-    /**
-     * @description Расшифровывающий поток из ogg в opus
-     * @readonly
-     */
-    readonly decoder?: OpusEncoder;
+    readonly input: T;
 
     /**
      * @description Отслеживаемые события для удаления
@@ -338,7 +560,7 @@ interface AudioResourceInput {
         destroy: string[];
 
         // Функция для очистки потока
-        destroy_callback: (input: OpusEncoder | Process) => void;
+        destroy_callback: (input: T) => void;
 
         /**
          * @description Если надо конкретно откуда-то отслеживать события
@@ -346,4 +568,10 @@ interface AudioResourceInput {
          */
         path?: string
     };
+
+    /**
+     * @description Как начать передавать данные из потока
+     * @readonly
+     */
+    readonly decode: (input: T) => void;
 }

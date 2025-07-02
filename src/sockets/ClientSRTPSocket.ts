@@ -1,44 +1,52 @@
-import crypto from "crypto";
+import crypto from "node:crypto";
 
 /**
  * @author SNIPPIK
  * @description Поддерживаемые типы шифрования
+ * @const Encryption
  * @private
  */
-const EncryptionModes: EncryptionModes[] = [];
-
-/**
- * @author SNIPPIK
- * @description Поддерживающие размеры начальных пакетов
- */
-const EncryptionNonce: Buffer[] = [];
-
-/**
- * @author SNIPPIK
- * @description Максимальный размер пакета
- * @private
- */
-const MAX_NONCE_SIZE = 2 ** 32 - 1;
+const Encryption: { name: EncryptionModes, nonce: Buffer } = {
+    name: null,
+    nonce: null
+};
 
 /**
  * @author SNIPPIK
  * @description Время до следующей проверки жизни
+ * @const TIMESTAMP_INC
  * @private
  */
 const TIMESTAMP_INC = 960;
 
 /**
  * @author SNIPPIK
+ * @description Максимальное значение int 16
+ * @const MAX_16BIT
+ * @private
+ */
+const MAX_16BIT = 2 ** 16;
+
+/**
+ * @author SNIPPIK
+ * @description Максимальное значение int 32
+ * @const MAX_32BIT
+ * @private
+ */
+const MAX_32BIT = 2 ** 32;
+
+/**
+ * @author SNIPPIK
  * @description Класс для шифрования данных через библиотеки sodium или нативным способом
- * @class ClientRTPSocket
+ * @class ClientSRTPSocket
  * @public
  */
-export class ClientRTPSocket {
+export class ClientSRTPSocket {
     /**
      * @description Пустой буфер
      * @private
      */
-    private readonly _nonceBuffer: Buffer = EncryptionNonce[0];
+    private _nonceBuffer: Buffer = Encryption.nonce;
 
     /**
      * @description Порядковый номер пустого буфера
@@ -60,10 +68,11 @@ export class ClientRTPSocket {
 
     /**
      * @description Задаем единственный актуальный вариант шифрования
+     * @static
      * @public
      */
-    public static get mode(): EncryptionModes {
-        return EncryptionModes[0];
+    public static get mode() {
+        return Encryption.name;
     };
 
     /**
@@ -71,39 +80,47 @@ export class ClientRTPSocket {
      * @public
      */
     public get nonce() {
-        this._nonce++;
+        // Проверяем что-бы не было привышения int 32
+        if (this._nonce > MAX_32BIT) this._nonce = 0;
 
-        // Если нет пакета или номер пакет превышен максимальный, то его надо сбросить
-        if (this._nonce > MAX_NONCE_SIZE) this._nonce = 0;
+        // Записываем в буффер
         this._nonceBuffer.writeUInt32BE(this._nonce, 0);
 
+        this._nonce++; // Добавляем к размеру
         return this._nonceBuffer;
     };
 
     /**
      * @description Пустой пакет для внесения данных по стандарту "Voice Packet Structure"
-     * @public
+     * @private
      */
-    private get rtp_packet() {
-        const rtp_packet = Buffer.alloc(12);
-        // Version + Flags, Payload Type
-        [rtp_packet[0], rtp_packet[1]] = [0x80, 0x78];
+    private get header() {
+        if (this.sequence > MAX_16BIT) this.sequence = 0;   // Проверяем что-бы не было привышения int 16
+        if (this.timestamp > MAX_32BIT) this.timestamp = 0; // Проверяем что-бы не было привышения int 32
 
-        // Последовательность
-        rtp_packet.writeUInt16BE(this.sequence, 2);
+        // Unsafe является безопасным поскольку данные будут перезаписаны
+        const RTPHead = Buffer.allocUnsafe(12);
+        // Version + Flags, Payload Type 120 (Opus)
+        [RTPHead[0], RTPHead[1]] = [0x80, 0x78];
+
+        // Записываем новую последовательность
+        RTPHead.writeUInt16BE(this.sequence, 2);
+        this.sequence = (this.sequence + 1) & 0xFFFF;
 
         // Временная метка
-        rtp_packet.writeUInt32BE(this.timestamp, 4);
+        RTPHead.writeUInt32BE(this.timestamp, 4);
+        this.timestamp = (this.timestamp + TIMESTAMP_INC) >>> 0;
 
         // SSRC
-        rtp_packet.writeUInt32BE(this.options.ssrc, 8);
+        RTPHead.writeUInt32BE(this.options.ssrc, 8);
 
-        return rtp_packet;
+        return RTPHead;
     };
 
     /**
      * @description Создаем класс
      * @param options
+     * @public
      */
     public constructor(private options: EncryptorOptions) {
         this.sequence = this.randomNBit(16);
@@ -116,38 +133,29 @@ export class ClientRTPSocket {
      * @public
      */
     public packet = (packet: Buffer) => {
-        this.sequence++;
-        this.timestamp += TIMESTAMP_INC;
+        // Получаем тип шифрования
+        const mode = ClientSRTPSocket.mode;
 
-        if (this.sequence >= 2 ** 16) this.sequence = 0;
-        if (this.timestamp >= 2 ** 32) this.timestamp = 0;
+        // Получаем заголовок RTP
+        const RTPHead = this.header;
 
-        return this.crypto(packet);
-    };
+        // Получаем nonce буфер 12-24 бит
+        const nonce = this.nonce;
 
-    /**
-     * @description Подготавливаем пакет к отправке, выставляем правильную очередность
-     * @param packet - Пакет Opus для шифрования
-     * @private
-     */
-    private crypto = (packet: Buffer): Buffer => {
-        const nonceBuffer = this._nonceBuffer.subarray(0, 4);
+        // Получаем первые 4 байта из буфера
+        const nonceBuffer = nonce.subarray(0, 4);
 
-        const mode = ClientRTPSocket.mode;
-        const rtp = this.rtp_packet;
-        const nonce = this.nonce
-
-        // Шифровка aead_aes256_gcm (support rtpsize)
+        // Шифровка aead_aes256_gcm
         if (mode === "aead_aes256_gcm_rtpsize") {
-            const cipher = crypto.createCipheriv("aes-256-gcm", this.options.key, nonce);
-            cipher.setAAD(rtp);
-            return Buffer.concat([rtp, cipher.update(packet), cipher.final(), cipher.getAuthTag(), nonceBuffer]);
+            const cipher = crypto.createCipheriv("aes-256-gcm", this.options.key, nonce, { authTagLength: 16 });
+            cipher.setAAD(RTPHead);
+            return Buffer.concat([RTPHead, cipher.update(packet), cipher.final(), cipher.getAuthTag(), nonceBuffer]);
         }
 
         // Шифровка через библиотеку
         else if (mode === "aead_xchacha20_poly1305_rtpsize") {
-            const cryptoPacket = loaded_lib.crypto_aead_xchacha20poly1305_ietf_encrypt(packet, rtp, nonce, this.options.key);
-            return Buffer.concat([rtp, cryptoPacket, nonceBuffer]);
+            const cryptoPacket = loaded_lib.crypto_aead_xchacha20poly1305_ietf_encrypt(packet, RTPHead, nonce, this.options.key);
+            return Buffer.concat([RTPHead, cryptoPacket, nonceBuffer]);
         }
 
         // Если нет больше вариантов шифровки
@@ -159,7 +167,30 @@ export class ClientRTPSocket {
      * @param bits - Количество бит
      * @private
      */
-    private randomNBit = (bits: number) => crypto.randomBytes(Math.ceil(bits / 8)).readUIntBE(0, Math.ceil(bits / 8)) % (2 ** bits);
+    private randomNBit = (bits: number) => {
+        const max = 2 ** bits;
+        const size = Math.ceil(bits / 8);
+        const maxGenerated = 2 ** (size * 8);
+        let rand: number;
+
+        do {
+            rand = crypto.randomBytes(size).readUIntBE(0, size);
+        } while (rand >= maxGenerated - (maxGenerated % max));
+
+        return rand % max;
+    };
+
+    /**
+     * @description Удаляем неиспользуемые данные
+     * @public
+     */
+    public destroy = () => {
+        this._nonce = null;
+        this._nonceBuffer = null;
+        this.timestamp = null;
+        this.sequence = null;
+        this.options = null;
+    };
 }
 
 /**
@@ -176,8 +207,8 @@ let loaded_lib: Methods.current = {};
 (async () => {
     // Если поддерживается нативная расшифровка
     if (crypto.getCiphers().includes("aes-256-gcm")) {
-        EncryptionModes.push("aead_aes256_gcm_rtpsize");
-        EncryptionNonce.push(Buffer.alloc(12));
+        Encryption.name = "aead_aes256_gcm_rtpsize";
+        Encryption.nonce = Buffer.alloc(12);
         return;
     }
 
@@ -215,11 +246,11 @@ let loaded_lib: Methods.current = {};
         }, names = Object.keys(support_libs);
 
         // Добавляем тип шифрования
-        EncryptionModes.push("aead_xchacha20_poly1305_rtpsize");
-        EncryptionNonce.push(Buffer.alloc(24));
+        Encryption.name = "aead_xchacha20_poly1305_rtpsize";
+        Encryption.nonce = Buffer.alloc(24);
 
         // Делаем проверку всех доступных библиотек
-        for (const name of names) {
+        for await (const name of names) {
             try {
                 const library = await import(name);
                 if (typeof library?.ready?.then === "function") await library.ready;

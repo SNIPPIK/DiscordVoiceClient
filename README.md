@@ -3,7 +3,7 @@
 [![downloads](https://img.shields.io/npm/dt/discord-voice-client.svg)](https://www.npmjs.com/package/discord-voice-client)
 
 # Discord voice client
-- Работает на следующих библиотеках (discord.js, seyfert)
+- Работает на любых библиотеках такие как discord.js, seyfert, eris...
 - Нет поддержки плеера, но готовая реализация есть [тут](https://github.com/SNIPPIK/UnTitles)
 - Требуется `FFmpeg`, `Node.js >=23`
 - Используется [`Voice Gateway Version 8`](https://discord.com/developers/docs/topics/voice-connections)
@@ -21,7 +21,7 @@ npm install discord-voice-client
 
 ## Discord.js
 ```ts
-import {AudioResource, VoiceConnection} from "discord-voice-client";
+import {AudioResource, VoiceConnection, SyncCycle} from "discord-voice-client";
 
 // Проще из-за нативной поддержки adapters
 const adapter = message.guild.voiceAdapterCreator;
@@ -35,6 +35,24 @@ const config = {
 // Голосовое подключение готово
 const voice = new VoiceConnection(config, adapter);
 const audio = new AudioResource("urlOrPathFile", {seek: 10, filters: null});
+
+// Как отправлять циклично пакеты
+class Sender<T extends VoiceConnection> extends SyncCycle<T> {
+    public constructor() {
+        super({
+            // Время до следующего прогона цикла
+            duration: 20,
+
+            // Функция проверки
+            filter: (item) => item.ready,
+
+            // Функция отправки аудио фрейма
+            execute: (connection) => {
+                connection.packet = audio.packet
+            }
+        });
+    };
+};
 
 // Отправка пакетов
 voice.packet = audio.packet;
@@ -226,9 +244,9 @@ export default createEvent({
 });
 ```
 
-- Вот теперь можно отправлять пакеты в seyfert
+- Вот теперь можно отправлять пакеты под seyfert
 ```ts
-import {AudioResource, VoiceConnection} from "discord-voice-client";
+import {AudioResource, VoiceConnection, SyncCycle} from "discord-voice-client";
 
 const adapter = client.voice.voiceAdapterCreator(guild.id);
 const config = {
@@ -242,6 +260,23 @@ const config = {
 const voice = new VoiceConnection(config, adapter);
 const audio = new AudioResource("urlOrPathFile", {seek: 10, filters: null});
 
-// Отправка пакетов
-voice.packet = audio.packet;
+// Как отправлять циклично пакеты
+class Sender<T extends VoiceConnection> extends SyncCycle<T> {
+    public constructor() {
+        super({
+            // Время до следующего прогона цикла
+            duration: 20,
+
+            // Функция проверки
+            filter: (item) => item.ready,
+
+            // Функция отправки аудио фрейма
+            execute: (connection) => {
+                
+                // Отправка пакетов
+                connection.packet = audio.packet
+            }
+        });
+    };
+};
 ```
