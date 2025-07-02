@@ -10,7 +10,7 @@
 
 
 > [!TIP]
-> Вам потребуется AudioPlayer!!! Без него отправка аудио фреймов будет затруднительна\
+> Вам потребуется AudioPlayer!!! Без него отправка аудио фреймов будет затруднительна  
 > Рекомендуется отправлять аудио фреймы через 20 ms от прошло фрейма
 
 
@@ -21,7 +21,7 @@ npm install discord-voice-client
 
 ## Discord.js
 ```ts
-import {AudioResource, VoiceConnection, SyncCycle} from "discord-voice-client";
+import {BufferedAudioResource, PipeAudioResource, VoiceConnection, SyncCycle} from "discord-voice-client";
 
 // Проще из-за нативной поддержки adapters
 const adapter = message.guild.voiceAdapterCreator;
@@ -34,7 +34,12 @@ const config = {
 
 // Голосовое подключение готово
 const voice = new VoiceConnection(config, adapter);
-const audio = new AudioResource("urlOrPathFile", {seek: 10, filters: null});
+
+// Буферезированный аудио поток
+const bufferedAudio = new BufferedAudioResource("urlOrPathFile", {seek: 10, filters: null});
+
+// Прямой аудио поток из ffmpeg с буфером в 14 сек
+const pipeAudio = new PipeAudioResource("urlOrPathFile", {seek: 10, filters: null});
 
 // Как отправлять циклично пакеты
 class Sender<T extends VoiceConnection> extends SyncCycle<T> {
@@ -246,7 +251,7 @@ export default createEvent({
 
 - Вот теперь можно отправлять пакеты под seyfert
 ```ts
-import {AudioResource, VoiceConnection, SyncCycle} from "discord-voice-client";
+import {BufferedAudioResource, PipeAudioResource, VoiceConnection, SyncCycle} from "discord-voice-client";
 
 const adapter = client.voice.voiceAdapterCreator(guild.id);
 const config = {
@@ -258,7 +263,12 @@ const config = {
 
 // Голосовое подключение готово
 const voice = new VoiceConnection(config, adapter);
-const audio = new AudioResource("urlOrPathFile", {seek: 10, filters: null});
+
+// Буферезированный аудио поток
+const bufferedAudio = new BufferedAudioResource("urlOrPathFile", {seek: 10, filters: null});
+
+// Прямой аудио поток из ffmpeg с буфером в 14 сек
+const pipeAudio = new PipeAudioResource("urlOrPathFile", {seek: 10, filters: null});
 
 // Как отправлять циклично пакеты
 class Sender<T extends VoiceConnection> extends SyncCycle<T> {

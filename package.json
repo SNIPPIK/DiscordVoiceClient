@@ -1,6 +1,6 @@
 {
   "name": "discord-voice-client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "homepage": "https://github.com/SNIPPIK/DiscordVoiceClient",
   "license": "BSD-3-Clause",
   "main": "dist/src/index",
