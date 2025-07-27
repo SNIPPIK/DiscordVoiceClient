@@ -5,8 +5,19 @@
 # Discord voice client
 - Работает на любых библиотеках такие как discord.js, seyfert, eris...
 - Нет поддержки плеера, но готовая реализация есть [тут](https://github.com/SNIPPIK/UnTitles)
-- Требуется `FFmpeg`, `Node.js >=23`
-- [Voice Gateway Version 8](https://discord.com/developers/docs/topics/voice-connections) [`(WebSocket + UDP + SRTP + Opus + Sodium)`](src) + [End-to-End Encryption (DAVE Protocol)](https://discord.com/developers/docs/topics/voice-connections#endtoend-encryption-dave-protocol)
+
+# 🎧 Основные возможности
+#### 🔊 Голосовой движок
+- Реализация [Voice Gateway Version 8](https://discord.com/developers/docs/topics/voice-connections) [`(WebSocket + UDP + SRTP + Opus + Sodium)`](src/services/voice) + [End-to-End Encryption (DAVE Protocol)](https://discord.com/developers/docs/topics/voice-connections#endtoend-encryption-dave-protocol)
+- Полная реализация **SRTP**: `aead_aes256_gcm`, `xchacha20_poly1305` (через библиотеки)
+- Адаптивная система отправки пакетов, без полноценного **WebRTP** ничего толкового не сделать!
+- Работает с готовыми **Ogg/Opus** фреймами!
+- Требуется **FFmpeg**, он отвечает за аудио!
+- Работает даже при сильном **event loop lag**
+#### 🎵 Аудио
+- Есть свой парсер **Ogg/Opus** для получения чистого opus!
+- Есть возможность переиспользовать аудио без конвертации
+- Есть поддержка длинных видео, Live видео пока сыровато.
 
 > [!WARNING]
 > Это компонент из другого проекта [UnTitles](https://github.com/SNIPPIK/UnTitles), данный модуль предоставляется как есть!
