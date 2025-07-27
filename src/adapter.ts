@@ -35,11 +35,12 @@ export class VoiceAdapter {
     /**
      * @description Отправка данных о голосовом состоянии в Discord
      * @param config - Данные для подключения
+     * @returns boolean
      * @public
      */
     public sendPayload = (config: VoiceConnectionConfiguration) => {
         try {
-            return this.adapter.sendPayload({op: GatewayOpcodes.VoiceStateUpdate, d: config });
+            return this.adapter?.sendPayload({op: GatewayOpcodes.VoiceStateUpdate, d: config });
         } catch (e) {
             console.error("hook error in adapter", e);
             return false;

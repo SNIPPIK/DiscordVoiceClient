@@ -13,24 +13,22 @@ class Process {
     }
     ;
     constructor(args, name = ffmpeg_path) {
-        if (!name)
-            throw Error("[Critical] FFmpeg not found!");
         const index_resource = args.indexOf("-i");
         const index_seek = args.indexOf("-ss");
         if (index_resource !== -1) {
             const isLink = args.at(index_resource + 1)?.startsWith("http");
             if (isLink)
-                args.unshift("-reconnect", "1", "-reconnect_at_eof", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5");
+                args.unshift("-reconnect", "1", "-reconnect_delay_max", "5");
         }
         if (index_seek !== -1) {
             const seek = parseInt(args.at(index_seek + 1));
-            if (isNaN(seek) || seek === 0)
+            if (isNaN(seek) || !seek)
                 args.splice(index_seek, 2);
         }
-        args.unshift("-vn", "-loglevel", "panic");
+        args.unshift("-vn", "-loglevel", "error", "-hide_banner");
         this._process = (0, node_child_process_1.spawn)(name, args);
         for (let event of ["end", "error", "exit"]) {
-            this.process.once(event, this.destroy);
+            this._process.once(event, this.destroy);
         }
     }
     ;

@@ -1,5 +1,5 @@
 import { createSocket, type Socket } from "node:dgram";
-import { opcode } from "./ClientWebSocket";
+import { WebSocketOpcodes } from "../index";
 import { TypedEmitter } from "../emitter";
 import { isIPv4 } from "node:net";
 
@@ -46,7 +46,7 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
         interval: null as NodeJS.Timeout,
 
         /**
-         * @description Интервал для предотвращения разрыва в милисекундах
+         * @description Интервал для предотвращения разрыва в миллисекундах
          * @readonly
          * @private
          */
@@ -77,11 +77,12 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
      * @description Данные подключения, полные данные пакета ready.d
      * @public
      */
-    public options: opcode.ready["d"];
+    public options: WebSocketOpcodes.ready["d"];
 
     /**
      * @description Отправка данных на сервер
      * @param packet - Отправляемый пакет
+     * @public
      */
     public set packet(packet: Buffer) {
         // Отправляем (RTP+OPUS) пакет
@@ -105,7 +106,7 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
      * @param options - Данные для подключения
      * @public
      */
-    public connect = (options: opcode.ready["d"]) => {
+    public connect = (options: WebSocketOpcodes.ready["d"]) => {
         this.keepAlive.intervalMs = options.heartbeat_interval; // Меняем интервал
 
         // Не имеет смысла создавать заново если все данные совпадают
@@ -116,6 +117,9 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
 
         // Меняем данные
         this.options = options;
+
+        // Если уже есть подключение
+        if (this.socket) this.reset();
 
         // Проверяем через какое соединение подключатся
         if (isIPv4(options.ip)) this.socket = createSocket("udp4");
@@ -138,6 +142,10 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
             }
         });
 
+        this.socket.on("message", (msg) => {
+            this.emit("message", msg);
+        });
+
         // Если подключение оборвалось
         this.socket.on("close", () => {
             this.isConnected = false;
@@ -149,6 +157,7 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
 
     /**
      * @description Подключаемся к серверу через UDP подключение
+     * @returns void
      * @public
      */
     public discovery = (ssrc: number) => {
@@ -174,7 +183,25 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
     };
 
     /**
-     * @description Закрывает сокет, экземпляр не сможет быть повторно использован.
+     * @description Удаляем UDP подключение
+     * @private
+     */
+    private reset = () => {
+        if (this.socket) {
+            try {
+                this.socket.disconnect?.();
+                this.socket.close?.();
+            } catch (err) {
+                if (err instanceof Error && err.message.includes("Not running")) return;
+            }
+        }
+
+        this.socket = null;
+    };
+
+    /**
+     * @description Закрывает сокет, экземпляр не сможет быть повторно использован
+     * @returns void
      * @public
      */
     public destroy = () => {
@@ -191,22 +218,16 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
         this.keepAlive = null;
         this.destroyed = null;
 
-        try {
-            this.socket.disconnect?.();
-            this.socket.close?.();
-        } catch (err) {
-            if (err instanceof Error && err.message.includes("Not running")) return;
-        }
-
-        this.socket = null;
+        this.reset();
     };
 
     /**
      * @description Пакет для создания UDP соединения
+     * @returns Buffer
      * @public
      */
     private discoveryBuffer = (ssrc: number) => {
-        /** Безопасен поскольку данные будут сразу перезаписаны */
+        /** Безопасен, поскольку данные будут сразу перезаписаны */
         const packet = Buffer.allocUnsafe(74);
         packet.writeUInt16BE(1, 0);
         packet.writeUInt16BE(70, 2);
@@ -217,6 +238,7 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
 
     /**
      * @description Функция для запуска интервала для поддержания соединения
+     * @returns void
      * @private
      */
     private manageKeepAlive = () => {
@@ -234,6 +256,7 @@ export class ClientUDPSocket extends TypedEmitter<UDPSocketEvents> {
 
     /**
      * @description Сброс таймера для поддерживания KeepAlive
+     * @returns void
      * @private
      */
     private resetKeepAliveInterval = () => {

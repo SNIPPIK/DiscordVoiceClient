@@ -33,8 +33,9 @@ class AudioBuffer {
     }
     ;
     clear = () => {
-        this._chunks.length = 0;
+        this._chunks.splice(0, this._chunks.length);
         this._position = null;
+        this._chunks = null;
     };
 }
 class BaseAudioResource extends emitter_1.TypedEmitter {
@@ -71,7 +72,7 @@ class BaseAudioResource extends emitter_1.TypedEmitter {
                 options.events.destroy_callback(options.input);
             });
         }
-        this.once("close", options.events.destroy_callback.bind(this, options.input));
+        this.once("close", () => options.events.destroy_callback(options.input));
         return options.decode(options.input);
     }
     ;
@@ -86,21 +87,21 @@ class BufferedAudioResource extends BaseAudioResource {
     config;
     _buffer = new AudioBuffer();
     get readable() {
-        return this._buffer.position !== this._buffer.size;
+        return this._buffer?.position !== this._buffer?.size;
     }
     ;
     get duration() {
-        if (!this._buffer.position)
+        if (!this._buffer?.position)
             return 0;
-        return Math.abs((((this._buffer.position + this._seek) * opus_1.OPUS_FRAME_SIZE) / 1e3));
+        return Math.abs((((this._buffer?.position + this._seek) * opus_1.OPUS_FRAME_SIZE) / 1e3));
     }
     ;
     get packet() {
-        return this._buffer.packet;
+        return this._buffer?.packet;
     }
     ;
     get packets() {
-        return this._buffer.size - this._buffer.position;
+        return this._buffer?.size - this._buffer?.position;
     }
     ;
     constructor(config) {
@@ -121,15 +122,9 @@ class BufferedAudioResource extends BaseAudioResource {
                 }
             },
             decode: (input) => {
-                const timeout = setTimeout(() => {
-                    this.emit("error", new Error("Timeout: the stream has been exceeded!"));
-                    this.emit("close");
-                }, 15e3);
                 input.on("frame", (packet) => {
-                    if (this._buffer.size === 0) {
-                        clearTimeout(timeout);
+                    if (this._buffer?.size === 0)
                         this.emit("readable");
-                    }
                     this._buffer.packet = packet;
                 });
             }
@@ -165,13 +160,16 @@ class BufferedAudioResource extends BaseAudioResource {
     };
     destroy = () => {
         this._buffer.clear();
+        this._buffer = null;
         this._destroy();
     };
 }
 exports.BufferedAudioResource = BufferedAudioResource;
 class PipeAudioResource extends BaseAudioResource {
     encoder = new opus_1.PipeEncoder({
-        highWaterMark: 512 * 5
+        highWaterMark: 512 * 5 * 5,
+        writableObjectMode: true,
+        readableObjectMode: true
     });
     played = 0;
     get packet() {
@@ -203,12 +201,7 @@ class PipeAudioResource extends BaseAudioResource {
                 }
             },
             decode: (input) => {
-                const timeout = setTimeout(() => {
-                    this.emit("error", new Error("Timeout: the stream has been exceeded!"));
-                    this.emit("close");
-                }, 15e3);
                 input.once("readable", () => {
-                    clearTimeout(timeout);
                     this._readable = true;
                     this.emit("readable");
                 });

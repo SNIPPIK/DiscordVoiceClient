@@ -10,7 +10,7 @@ class VoiceAdapter {
     };
     sendPayload = (config) => {
         try {
-            return this.adapter.sendPayload({ op: v10_1.GatewayOpcodes.VoiceStateUpdate, d: config });
+            return this.adapter?.sendPayload({ op: v10_1.GatewayOpcodes.VoiceStateUpdate, d: config });
         }
         catch (e) {
             console.error("hook error in adapter", e);

@@ -1,37 +1,53 @@
+import { WebSocketOpcodes, GatewayCloseCodes } from "../index";
 import { HeartbeatManager } from "../managers/heartbeat";
-import { VoiceOpcodes } from "discord-api-types/voice";
-import { WebSocket, MessageEvent } from "undici";
+import { VoiceOpcodes } from "discord-api-types/voice/v8";
+import { WebSocket, MessageEvent, Data } from "ws";
 import { TypedEmitter } from "../emitter";
 
 /**
  * @author SNIPPIK
- * @description Клиент для подключения к WebSocket
+ * @description Клиент для взаимодействия с discord, по методу wss
  * @class ClientWebSocket
  * @extends TypedEmitter
  * @public
  */
 export class ClientWebSocket extends TypedEmitter<ClientWebSocketEvents> {
-    /** Конечная точко подключения */
-    private endpoint: string;
-
-    /** Параметр подключения */
-    private isConnecting: boolean;
-
-    /** Менеджер жизни подключения, необходим для работы подключения */
-    private heartbeat: HeartbeatManager;
-
-    /** Клиент WebSocket */
-    private ws: WebSocket;
-
-    /** Номер последнего принятого пакета */
-    public lastAsk: number = -1;
+    /**
+     * @description Текущий статус подключения клиента
+     * @private
+     */
+    private _status: WebSocketStatus = WebSocketStatus.idle;
 
     /**
-     * @description Подключен ли websocket к endpoint
+     * @description Адрес для подключения по wss
+     * @private
+     */
+    private _endpoint: string;
+
+    /**
+     * @description Клиент wss
+     * @private
+     */
+    private ws: WebSocket;
+
+    /**
+     * @description Менеджер жизни подключения
+     * @private
+     */
+    private _heartbeat: HeartbeatManager;
+
+    /**
+     * @description Последовательность запроса
      * @public
      */
-    public get connected() {
-        return this.ws?.readyState === WebSocket.OPEN || this.ws?.readyState === WebSocket.CONNECTING;
+    public sequence: number = -1;
+
+    /**
+     * @description Текущий статус клиента
+     * @public
+     */
+    public get status() {
+        return this._status;
     };
 
     /**
@@ -39,24 +55,25 @@ export class ClientWebSocket extends TypedEmitter<ClientWebSocketEvents> {
      * @param payload - Данные Discord Voice Opcodes
      * @public
      */
-    public set packet(payload: opcode.extract) {
+    public set packet(payload: WebSocketOpcodes.extract | WebSocketOpcodes.dave_opcodes | Buffer) {
         // Для отладки
         this.emit("debug", `[WebSocket/send:]`, payload);
 
-        // Если ws не подключен
-        if (!this.connected) return;
+        // Если ws клиент подключен
+        if (this._status === "connected") {
+            try {
+                if (payload instanceof Buffer) this.ws.send(payload);
+                else this.ws.send(JSON.stringify(payload));
+            } catch (err) {
+                // Если ws упал
+                if (`${err}`.match(/Cannot read properties of null/)) {
+                    // Пробуем подключится заново
+                    this.connect(this._endpoint);
+                    return;
+                }
 
-        try {
-           this.ws.send(JSON.stringify(payload));
-        } catch (err) {
-            // Если ws упал
-            if (`${err}`.match(/Cannot read properties of null/)) {
-                // Пробуем подключится заново
-                this.connect(this.endpoint);
-                return;
+                this.emit("error", err instanceof Error ? err : new Error(String(err)));
             }
-
-            this.emit("error", err instanceof Error ? err : new Error(String(err)));
         }
     };
 
@@ -67,23 +84,28 @@ export class ClientWebSocket extends TypedEmitter<ClientWebSocketEvents> {
     public constructor() {
         super();
         // Создаем менеджер жизни
-        this.heartbeat = new HeartbeatManager({
+        this._heartbeat = new HeartbeatManager({
             // Отправка heartbeat
             send: () => {
                 this.packet = {
                     op: VoiceOpcodes.Heartbeat,
                     d: {
                         t: Date.now(),
-                        seq_ack: this.lastAsk
+                        seq_ack: this.sequence
                     }
                 };
             },
 
             // Если не получен HEARTBEAT_ACK вовремя
             onTimeout: () => {
-                if (this.heartbeat.missed >= 3) {
-                    this.emit("warn", "HEARTBEAT_ACK timeout x3, reconnecting...");
-                    this.attemptReconnect();
+                if (this._heartbeat.missed === 3) {
+                    this._heartbeat.stop();
+
+                    // Если текущий статус не является подключенным
+                    if (this._status !== "connected") {
+                        this.emit("close", 1006, "HEARTBEAT_ACK timeout");
+                        this.emit("warn", "HEARTBEAT_ACK timeout x3, reconnecting...");
+                    }
                 } else {
                     this.emit("warn", "HEARTBEAT_ACK not received in time");
                 }
@@ -91,9 +113,8 @@ export class ClientWebSocket extends TypedEmitter<ClientWebSocketEvents> {
 
             // Получен HEARTBEAT_ACK
             onAck: (latency) => {
-                this.lastAsk++;
-                this.emit("debug", `HEARTBEAT_ACK received. Latency: ${latency} ms`);
-                //if (this.ws?.readyState === WebSocket.OPEN) this.ws.ping();
+                //this.sequence++;
+                this.emit("warn", `HEARTBEAT_ACK received. Latency: ${latency} ms`);
             }
         });
     };
@@ -101,36 +122,51 @@ export class ClientWebSocket extends TypedEmitter<ClientWebSocketEvents> {
     /**
      * @description Создаем подключение, websocket по ранее указанному пути
      * @param endpoint - Путь подключения
+     * @param code - Последний полученный код, нужен для понимания надо ли отправлять 7 opcode
+     * @returns void
      * @public
      */
-    public connect = (endpoint: string) => {
-        if (this.isConnecting) return;
-        this.isConnecting = true;
+    public connect = (endpoint: string): void => {
+        // Если ws уже подключается заново
+        if (this._status === WebSocketStatus.connecting) return;
 
-        // Если есть прошлый WS
-        if (this.ws) this.reset();
+        // Меняем статус на подключение
+        this._status = WebSocketStatus.connecting;
 
-        this.endpoint = endpoint;
-        this.ws = new WebSocket(`${endpoint}?v=8`);
+        // Если ws клиент уже есть
+        if (this.ws) {
+            // Удаляем ws, поскольку он будет создан заново
+            this.reset();
+        }
+
+        this._endpoint = endpoint;
+        this.ws = new WebSocket(`wss://${endpoint}?v=8`, {
+            headers: {
+                "User-Agent": "VoiceClient (https://github.com/SNIPPIK/UnTitles/tree/beta/src/services/voice)"
+            }
+        });
 
         // Сообщение от websocket соединения
-        this.ws.onmessage = this.onEventMessage;
+        this.ws.onmessage = this.onReceiveMessage;
 
         // Запуск websocket соединения
         this.ws.onopen = () => {
-            this.isConnecting = false;
+            // Меняем статус на подключен
+            this._status = WebSocketStatus.connected;
             this.emit("open");
-        }
+        };
 
         // Закрытие websocket соединения
         this.ws.onclose = (ev) => {
-            this.isConnecting = false;
-            this.onEventClose(ev.code, ev.reason);
-        }
+            // Меняем статус на отключен
+            this._status = WebSocketStatus.closed;
+            this.onReceiveClose(ev.code, ev.reason);
+        };
 
         // Ошибка websocket соединения
         this.ws.onerror = ({error}) => {
-            this.isConnecting = false;
+            // Меняем статус на переподключение
+            this._status = WebSocketStatus.reconnecting;
             this.emit("warn", error);
 
             // Если ws уже разорвал соединение
@@ -146,62 +182,127 @@ export class ClientWebSocket extends TypedEmitter<ClientWebSocketEvents> {
             }
 
             this.emit("error", error);
+        };
+    };
+
+    /**
+     * @description Читаем буфер или json в виде строчки
+     * @param data - Raw данные из websocket
+     * @private
+     */
+    private readRawData = (data: Data) => {
+        // Если пришел буфер
+        if (data instanceof Buffer || data instanceof ArrayBuffer) {
+            const buffer = data instanceof ArrayBuffer ? Buffer.from(data) : data;
+            const op = buffer.readUInt8(2) as WebSocketOpcodes.dave_opcodes["op"];
+            const payload = buffer.subarray(3);
+            const seq = buffer.readUInt16BE(0);
+
+            // Если есть последний seq
+            if (seq) this.sequence = seq;
+
+            // Отправляем полученный буфер
+            this.emit("binary", { op, payload });
+
+            // Для отладки
+            this.emit("debug", `[WebSocket/get:]`, {op, payload});
+            return null;
         }
+
+        // Если пришло json in string значение
+        let payload: WebSocketOpcodes.extract | WebSocketOpcodes.dave_opcodes;
+        try {
+            payload = JSON.parse(data.toString()) as WebSocketOpcodes.extract | WebSocketOpcodes.dave_opcodes;
+        } catch {
+            this.emit("error", new Error('Invalid JSON'));
+            return null;
+        }
+
+        return payload;
     };
 
     /**
      * @description Принимаем сообщение со стороны websocket
      * @param data - Получаемые данные в buffer
+     * @returns void
      * @private
      */
-    private onEventMessage = (data: MessageEvent) => {
-        let payload: opcode.extract;
-        try {
-            payload = JSON.parse(data.data.toString());
-        } catch {
-            this.emit("error", new Error('Invalid JSON'));
-            return;
-        }
+    private onReceiveMessage = (data: MessageEvent) => {
+        const payload = this.readRawData(data.data);
+
+        // Если нет данных
+        if (!payload) return null;
+
+        // Если есть последний seq
+        if ("seq" in payload) this.sequence = payload.seq;
 
         // Данные из пакета
         const { op, d } = payload;
 
         // Внутрення обработка
         switch (op) {
-            // Получение heartbeat_interval
-            case VoiceOpcodes.Hello: {
-                this.heartbeat.start(d.heartbeat_interval);
-                break;
-            }
-
             // Проверка HeartbeatAck
             case VoiceOpcodes.HeartbeatAck: {
-                this.heartbeat.ack();
+                this._heartbeat.ack();
                 break;
             }
 
             // Проверка переподключения
             case VoiceOpcodes.Resumed: {
-                this.heartbeat.start();
+                this._heartbeat.start();
+                break;
+            }
+
+            // Получение heartbeat_interval
+            case VoiceOpcodes.Hello: {
+                this._heartbeat.start(d["heartbeat_interval"]);
+                break;
+            }
+
+            // Проверка подключения клиента
+            case VoiceOpcodes.Speaking: {
+                this.emit("speaking", payload as any);
+                break;
+            }
+
+            // Проверка подключения клиента
+            case VoiceOpcodes.ClientsConnect: {
+                this.emit("ClientConnect", payload);
                 break;
             }
 
             // Проверка отключения клиента
             case VoiceOpcodes.ClientDisconnect: {
-                this.emit("disconnect", d.code, d.reason);
+                this.emit("ClientDisconnect", payload);
                 break;
             }
 
             // Получение статуса готовности
             case VoiceOpcodes.Ready: {
                 this.emit("ready", payload);
-                this.heartbeat.resetReconnects(); // Сбросить счётчик при успешном подключении
+                this._heartbeat.resetReconnects(); // Сбросить счётчик при успешном подключении
                 break;
             }
 
             // Получение статуса о данных сессии
             case VoiceOpcodes.SessionDescription: {
                 this.emit("sessionDescription", payload);
+                break;
+            }
+
+            // Dave
+            case VoiceOpcodes.DaveMlsCommitWelcome:
+            case VoiceOpcodes.DaveTransitionReady:
+            case VoiceOpcodes.DaveMlsWelcome:
+            case VoiceOpcodes.DavePrepareEpoch:
+            case VoiceOpcodes.DaveMlsKeyPackage:
+            case VoiceOpcodes.DaveMlsInvalidCommitWelcome:
+            case VoiceOpcodes.DaveMlsProposals:
+            case VoiceOpcodes.DaveMlsExternalSender:
+            case VoiceOpcodes.DaveExecuteTransition:
+            case VoiceOpcodes.DaveMlsAnnounceCommitTransition:
+            case VoiceOpcodes.DavePrepareTransition: {
+                this.emit("daveSession", payload);
                 break;
             }
         }
@@ -214,11 +315,12 @@ export class ClientWebSocket extends TypedEmitter<ClientWebSocketEvents> {
      * @description Принимаем сообщение со стороны websocket
      * @param code - Код закрытия
      * @param reason - Причина закрытия
+     * @returns void
      * @private
      */
-    private onEventClose = (code: WebSocketCloseCodes, reason: string) => {
-        const ignoreCodes: WebSocketCloseCodes[] = [4014, 4022];
-        const notReconnect: WebSocketCloseCodes[] = [4006, 1000, 1002];
+    private onReceiveClose = (code: GatewayCloseCodes, reason: string) => {
+        const ignoreCodes: GatewayCloseCodes[] = [4014, 4022];
+        const notReconnect: GatewayCloseCodes[] = [4006, 1000, 1002];
 
         this.emit("debug", `[WebSocket/close]: ${code} - ${reason}`);
 
@@ -226,10 +328,10 @@ export class ClientWebSocket extends TypedEmitter<ClientWebSocketEvents> {
         if (ignoreCodes.includes(code)) return;
 
         // Если ws был подключен до отключения
-        else if (this.connected && !notReconnect.includes(code)) {
+        else if (this._status === WebSocketStatus.connected && !notReconnect.includes(code)) {
             // Если можно подключится заново создавая новой ws
             if (code < 4000 || code === 4015) {
-                this.attemptReconnect();
+                this.connect(this._endpoint);
                 return;
             }
         }
@@ -239,55 +341,56 @@ export class ClientWebSocket extends TypedEmitter<ClientWebSocketEvents> {
     };
 
     /**
-     * @description Проверяем кол-во переподключений
-     * @private
-     */
-    private attemptReconnect = (reconnect?: boolean) => {
-        this.heartbeat.stop();
-
-        // Переподключемся минуя посредика в виде VoiceConnection
-        if (reconnect || this.heartbeat.reconnectAttempts >= 3) {
-            this.emit("debug", `Reconnecting...`);
-            this.connect(this.endpoint);
-            return;
-        }
-
-        this.heartbeat.increaseReconnect();
-        const delay = Math.min(1000 * this.heartbeat.reconnectAttempts, 5000);
-
-        // Переподключемся через код resume
-        setTimeout(() => {
-            this.emit("debug", `Reconnecting... Attempt ${this.heartbeat.reconnectAttempts}`);
-            this.emit("resumed");
-        }, delay);
-    };
-
-    /**
      * @description Отключение текущего websocket подключения
+     * @returns void
      * @public
      */
-    public reset = () => {
+    public reset = (): void => {
         // Если есть websocket клиент
         if (this.ws) {
             this.removeAllListeners();
-
-            if (this.connected) this.ws.close(1_000);
+            this.ws.close(1_000);
         }
 
         this.ws = null;
-        this.lastAsk = 0;
-        this.heartbeat.stop();
+        this._heartbeat.stop();
     };
 
     /**
      * @description Уничтожаем подключение
+     * @returns void
      * @public
      */
-    public destroy = () => {
+    public destroy = (): void => {
         this.reset();
-
-        this.lastAsk = null;
+        this.sequence = null;
+        this._heartbeat.stop();
+        this._heartbeat = null;
+        this._endpoint = null;
+        this._status = null;
     };
+}
+
+/**
+ * @author SNIPPIK
+ * @description Статусы для работы класса ClientWebSocket
+ * @enum WebSocketStatus
+ */
+enum WebSocketStatus {
+    /** Если клиент подключается заново  */
+    reconnecting = "reconnecting",
+
+    /** Если клиент подключается */
+    connecting = "connecting",
+
+    /** Если клиент подключен к серверу */
+    connected = "connected",
+
+    /** Если клиент закрыл соединение */
+    closed = "closed",
+
+    /** Если клиент просто ожидает дальнейших действий */
+    idle = "idle"
 }
 
 /**
@@ -307,7 +410,24 @@ interface ClientWebSocketEvents {
      * @param code - Код отключения
      * @param reason - Причина отключения
      */
-    "close": (code: WebSocketCloseCodes, reason: string) => void;
+    "close": (code: GatewayCloseCodes, reason: string) => void;
+
+    /**
+     * @description Если получен код голоса от discord, нужен для receiver
+     */
+    "speaking": (d: WebSocketOpcodes.speaking_get) => void;
+
+    /**
+     * @description Если получен код подключения нового клиента
+     * @constructor
+     */
+    "ClientConnect": (d: WebSocketOpcodes.connect) => void;
+
+    /**
+     * @description Если получен код отключения клиента
+     * @constructor
+     */
+    "ClientDisconnect": (d: WebSocketOpcodes.disconnect) => void;
 
     /**
      * @description Если клиент был отключен из-за отключения бота от голосового канала
@@ -320,13 +440,25 @@ interface ClientWebSocketEvents {
      * @description Событие для opcodes, приходят не все
      * @param opcodes - Не полный список получаемых opcodes
      */
-    "ready": (opcodes: opcode.ready) => void;
+    "ready": (opcodes: WebSocketOpcodes.ready) => void;
 
     /**
      * @description Событие для opcodes, приходят не все
      * @param opcodes - Не полный список получаемых opcodes
      */
-    "sessionDescription": (opcodes: opcode.session) => void;
+    "sessionDescription": (opcodes: WebSocketOpcodes.session) => void;
+
+    /**
+     * @description Все события для работы с dave сессией
+     * @param opcodes - Полный список всех протоколов Dave
+     */
+    "daveSession": (opcodes: WebSocketOpcodes.dave_opcodes) => void;
+
+    /**
+     * @description Все события для работы с dave сессией
+     * @param opcodes - Полный список всех протоколов Dave
+     */
+    "binary": (data: {op: WebSocketOpcodes.dave_opcodes["op"], payload: Buffer}) => void;
 
     /**
      * @description Успешное подключение WebSocket
@@ -357,231 +489,4 @@ interface ClientWebSocketEvents {
      * ```
      */
     "resumed": () => void;
-}
-
-/**
- * @author SNIPPIK
- * @description Поддерживаемые коды
- * @namespace opcode
- */
-export namespace opcode {
-    /**
-     * @description Все opcode, для типизации websocket
-     * @type extract
-     */
-    export type extract = identify | select_protocol | ready | heartbeat | session | speaking | heartbeat_ask | resume | hello | resumed | disconnect;
-
-    /**
-     * @description Данные для подключения именно к голосовому каналу
-     * @usage only-send
-     * @code 0
-     */
-    export interface identify {
-        "op": VoiceOpcodes.Identify;
-        "d": {
-            "server_id": string;
-            "user_id": string;
-            "session_id": string;
-            "token": string;
-        }
-    }
-
-    /**
-     * @description Данные для создания UDP подключения
-     * @usage only-send
-     * @code 1
-     */
-    export interface select_protocol {
-        "op": VoiceOpcodes.SelectProtocol;
-        "d": {
-            "protocol": "udp", // Протокол подключения
-            "data": {
-                "address": string
-                "port": number
-                "mode": string
-            }
-        }
-    }
-
-    /**
-     * @description Данные для создания RTP подключения
-     * @usage only-request
-     * @code 2
-     */
-    export interface ready {
-        "op": VoiceOpcodes.Ready;
-        "d": {
-            "ssrc": number;
-            "ip": string;
-            "port": number;
-            "modes": string[];
-            "heartbeat_interval": number;
-        }
-        "s": number
-    }
-
-    /**
-     * @description Данные для подтверждения работоспособности подключения
-     * @usage only-send
-     * @code 3
-     */
-    export interface heartbeat {
-        "op": VoiceOpcodes.Heartbeat;
-        "d": {
-            "t": number;
-            "seq_ack": number;
-        }
-    }
-
-    /**
-     * @description Данные для создания RTP подключения
-     * @usage only-request
-     * @code 4
-     */
-    export interface session {
-        "op": VoiceOpcodes.SessionDescription;
-        "d": {
-            mode: string;         // Выбранный режим шифрования, например "xsalsa20_poly1305"
-            secret_key: number[]; // Массив байтов (uint8) для шифрования RTP-пакетов
-        };
-    }
-
-    /**
-     * @description Данные для начала возможности отправки пакетов через UDP
-     * @usage only-send
-     * @code 5
-     */
-    export interface speaking {
-        "op": VoiceOpcodes.Speaking,
-        "seq": number;
-        "d": {
-            "speaking": number;
-            "delay": number;
-            "ssrc": number;
-        }
-    }
-
-    /**
-     * @description Данные для обновления жизненного цикла websocket
-     * @usage only-request
-     * @code 6
-     */
-    export interface heartbeat_ask {
-        "op": VoiceOpcodes.HeartbeatAck,
-        "d": {
-            "t": number
-        }
-    }
-
-    /**
-     * @description Данные для обновления жизненного цикла websocket
-     * @usage only-request
-     * @code 7
-     */
-    export interface resume {
-        "op": VoiceOpcodes.Resume;
-        "d": {
-            "server_id": string;
-            "session_id": string;
-            "token": string;
-            "seq_ack": number;
-        }
-    }
-
-    /**
-     * @description Данные для обновления жизненного цикла websocket
-     * @usage only-request
-     * @code 8
-     */
-    export interface hello {
-        "op": VoiceOpcodes.Hello;
-        "d": {
-            "heartbeat_interval": number;
-        }
-    }
-
-    /**
-     * @description Данные для обновления websocket
-     * @usage only-request
-     * @code 9
-     */
-    export interface resumed {
-        "op": VoiceOpcodes.Resumed;
-        "d": {};
-    }
-
-    /**
-     * @description Данные для отключения бота от голосового канала
-     * @usage send/request
-     * @code 13
-     */
-    export interface disconnect {
-        "op": VoiceOpcodes.ClientDisconnect;
-        "d": {
-            "code": number;
-            "reason": string;
-        }
-    }
-}
-
-/**
- * @author SNIPPIK
- * @description Статус коды, Discord Gateway WebSocket
- * @enum WebSocketCloseCodes
- */
-export enum WebSocketCloseCodes {
-    /** 1000 - Нормальное завершение соединения. */
-    NORMAL_CLOSURE = 1000,
-
-    /** 1001 - Соединение закрыто, т.к, сервер или клиент отключается. */
-    GOING_AWAY = 1001,
-
-    EXIT_RESULT = 1002,
-
-    /** 1006 - Аномальное закрытие, соединение было закрыто без фрейма закрытия. */
-    ABNORMAL_CLOSURE = 1006,
-
-    // Discord Specific Codes
-
-    /** 4001 - Неизвестный opcode или некорректный payload. */
-    UNKNOWN_OPCODE = 4001,
-
-    /** 4002 - Некорректная структура payload. */
-    DECODE_ERROR = 4002,
-
-    /** 4003 - Не авторизован. */
-    NOT_AUTHENTICATED = 4003,
-
-    /** 4004 - Недействительный токен авторизации. */
-    AUTHENTICATION_FAILED = 4004,
-
-    /** 4005 - Уже авторизован. */
-    ALREADY_AUTHENTICATED = 4005,
-
-    /** 4006 - Сессия больше не действительна */
-    INVALID_SESSION = 4006,
-
-    /** 4009 - Истечение времени сеанса */
-    SESSION_TIMEOUT = 4009,
-
-    /** 4011 - Сервер не найден  */
-    SHARDING_REQUIRED = 4011,
-
-    /** 4012 - Неизвестный протокол */
-    INVALID_VERSION = 4012,
-
-    /** 4014 - Отключен */
-    DISALLOWED_INTENTS = 4014,
-
-    /** 4015 - Голосовой сервер вышел из строя */
-    INSUFFICIENT_RESOURCES = 4015,
-
-    /** 4016 - Неизвестный режим шифрования */
-    OVERLOADED = 4016,
-
-    /** 4016 - Плохой запрос  */
-    BAD_REQUEST = 4020,
-
-    /** 4022 - Сессия устарела  */
-    Session_Expired = 4022
 }

@@ -20,7 +20,7 @@ export class Process {
      * @public
      */
     public get process() {
-        return this._process!;
+        return this._process;
     };
 
     /**
@@ -36,12 +36,10 @@ export class Process {
      * @description Задаем параметры и запускаем процесс
      * @param args {string[]} Аргументы для запуска
      * @param name {string} Имя процесса
+     * @constructor
      * @public
      */
     public constructor(args: string[], name: string = ffmpeg_path) {
-        // Выдаем ошибку если нет FFmpeg
-        if (!name) throw Error("[Critical] FFmpeg not found!");
-
         const index_resource = args.indexOf("-i");
         const index_seek = args.indexOf("-ss");
 
@@ -50,7 +48,7 @@ export class Process {
             const isLink = args.at(index_resource + 1)?.startsWith("http");
 
             // Если указана ссылка
-            if (isLink) args.unshift("-reconnect", "1", "-reconnect_at_eof", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "5");
+            if (isLink) args.unshift("-reconnect", "1", "-reconnect_delay_max", "5");
         }
 
         // Проверяем на наличие пропуска времени
@@ -58,14 +56,14 @@ export class Process {
             const seek = parseInt(args.at(index_seek + 1));
 
             // Если указано не число
-            if (isNaN(seek) || seek === 0) args.splice(index_seek, 2);
+            if (isNaN(seek) || !seek) args.splice(index_seek, 2);
         }
 
-        args.unshift("-vn", "-loglevel", "panic");
+        args.unshift("-vn", "-loglevel", "error", "-hide_banner");
         this._process = spawn(name, args);
 
         for (let event of ["end", "error", "exit"]) {
-            this.process.once(event, this.destroy);
+            this._process.once(event, this.destroy);
         }
     };
 

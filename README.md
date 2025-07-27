@@ -6,8 +6,10 @@
 - Работает на любых библиотеках такие как discord.js, seyfert, eris...
 - Нет поддержки плеера, но готовая реализация есть [тут](https://github.com/SNIPPIK/UnTitles)
 - Требуется `FFmpeg`, `Node.js >=23`
-- Используется [`Voice Gateway Version 8`](https://discord.com/developers/docs/topics/voice-connections)
+- [Voice Gateway Version 8](https://discord.com/developers/docs/topics/voice-connections) [`(WebSocket + UDP + SRTP + Opus + Sodium)`](src) + [End-to-End Encryption (DAVE Protocol)](https://discord.com/developers/docs/topics/voice-connections#endtoend-encryption-dave-protocol)
 
+> [!WARNING]
+> Это компонент из другого проекта [UnTitles](https://github.com/SNIPPIK/UnTitles), данный модуль предоставляется как есть!
 
 > [!TIP]
 > Вам потребуется AudioPlayer!!! Без него отправка аудио фреймов будет затруднительна  
@@ -21,7 +23,8 @@ npm install discord-voice-client
 
 ## Discord.js
 ```ts
-import {BufferedAudioResource, PipeAudioResource, VoiceConnection, SyncCycle} from "discord-voice-client";
+import { BufferedAudioResource, PipeAudioResource, VoiceConnection } from "discord-voice-client";
+import { TaskCycle } from "snpk-cycle";
 
 // Проще из-за нативной поддержки adapters
 const adapter = message.guild.voiceAdapterCreator;
@@ -35,6 +38,10 @@ const config = {
 // Голосовое подключение готово
 const voice = new VoiceConnection(config, adapter);
 
+// Debug
+voice.websocket.on("debug", console.log);
+voice.websocket.on("warn", console.log);
+
 // Буферезированный аудио поток
 const bufferedAudio = new BufferedAudioResource("urlOrPathFile", {seek: 10, filters: null});
 
@@ -42,11 +49,13 @@ const bufferedAudio = new BufferedAudioResource("urlOrPathFile", {seek: 10, filt
 const pipeAudio = new PipeAudioResource("urlOrPathFile", {seek: 10, filters: null});
 
 // Как отправлять циклично пакеты
-class Sender<T extends VoiceConnection> extends SyncCycle<T> {
+class Sender<T extends VoiceConnection> extends TaskCycle<T> {
     public constructor() {
         super({
             // Время до следующего прогона цикла
             duration: 20,
+            
+            drift: false,
 
             // Функция проверки
             filter: (item) => item.ready,
@@ -251,7 +260,8 @@ export default createEvent({
 
 - Вот теперь можно отправлять пакеты под seyfert
 ```ts
-import {BufferedAudioResource, PipeAudioResource, VoiceConnection, SyncCycle} from "discord-voice-client";
+import { BufferedAudioResource, PipeAudioResource, VoiceConnection, SyncCycle } from "discord-voice-client";
+import { TaskCycle } from "snpk-cycle";
 
 const adapter = client.voice.voiceAdapterCreator(guild.id);
 const config = {
@@ -271,11 +281,13 @@ const bufferedAudio = new BufferedAudioResource("urlOrPathFile", {seek: 10, filt
 const pipeAudio = new PipeAudioResource("urlOrPathFile", {seek: 10, filters: null});
 
 // Как отправлять циклично пакеты
-class Sender<T extends VoiceConnection> extends SyncCycle<T> {
+class Sender<T extends VoiceConnection> extends TaskCycle<T> {
     public constructor() {
         super({
             // Время до следующего прогона цикла
             duration: 20,
+
+            drift: false,
 
             // Функция проверки
             filter: (item) => item.ready,

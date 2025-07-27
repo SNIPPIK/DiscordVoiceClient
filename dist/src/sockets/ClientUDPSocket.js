@@ -37,6 +37,8 @@ class ClientUDPSocket extends emitter_1.TypedEmitter {
             this.removeAllListeners();
         }
         this.options = options;
+        if (this.socket)
+            this.reset();
         if ((0, node_net_1.isIPv4)(options.ip))
             this.socket = (0, node_dgram_1.createSocket)("udp4");
         else
@@ -53,6 +55,9 @@ class ClientUDPSocket extends emitter_1.TypedEmitter {
             catch (e) {
                 this.emit("error", new Error("Failed to set socket buffer size: " + e));
             }
+        });
+        this.socket.on("message", (msg) => {
+            this.emit("message", msg);
         });
         this.socket.on("close", () => {
             this.isConnected = false;
@@ -76,6 +81,19 @@ class ClientUDPSocket extends emitter_1.TypedEmitter {
             }
         });
     };
+    reset = () => {
+        if (this.socket) {
+            try {
+                this.socket.disconnect?.();
+                this.socket.close?.();
+            }
+            catch (err) {
+                if (err instanceof Error && err.message.includes("Not running"))
+                    return;
+            }
+        }
+        this.socket = null;
+    };
     destroy = () => {
         if (this.destroyed)
             return;
@@ -86,15 +104,7 @@ class ClientUDPSocket extends emitter_1.TypedEmitter {
         this.removeAllListeners();
         this.keepAlive = null;
         this.destroyed = null;
-        try {
-            this.socket.disconnect?.();
-            this.socket.close?.();
-        }
-        catch (err) {
-            if (err instanceof Error && err.message.includes("Not running"))
-                return;
-        }
-        this.socket = null;
+        this.reset();
     };
     discoveryBuffer = (ssrc) => {
         const packet = Buffer.allocUnsafe(74);

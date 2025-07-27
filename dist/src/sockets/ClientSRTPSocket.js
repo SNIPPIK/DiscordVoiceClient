@@ -47,20 +47,21 @@ const MAX_16BIT = 2 ** 16;
 const MAX_32BIT = 2 ** 32;
 class ClientSRTPSocket {
     options;
-    _nonceBuffer = Encryption.nonce;
-    _nonce = 0;
+    _RTP_HEAD = Buffer.allocUnsafe(12);
+    _nonce = Buffer.from(Encryption.nonce);
+    _nonceSize;
     sequence;
     timestamp;
     static get mode() {
         return Encryption.name;
     }
     ;
-    get nonce() {
-        if (this._nonce > MAX_32BIT)
-            this._nonce = 0;
-        this._nonceBuffer.writeUInt32BE(this._nonce, 0);
-        this._nonce++;
-        return this._nonceBuffer;
+    get nonceSize() {
+        if (this._nonceSize > MAX_32BIT)
+            this._nonceSize = 0;
+        this._nonce.writeUInt32BE(this._nonceSize, 0);
+        this._nonceSize++;
+        return this._nonce;
     }
     ;
     get header() {
@@ -68,8 +69,7 @@ class ClientSRTPSocket {
             this.sequence = 0;
         if (this.timestamp > MAX_32BIT)
             this.timestamp = 0;
-        const RTPHead = Buffer.allocUnsafe(12);
-        [RTPHead[0], RTPHead[1]] = [0x80, 0x78];
+        const RTPHead = this._RTP_HEAD;
         RTPHead.writeUInt16BE(this.sequence, 2);
         this.sequence = (this.sequence + 1) & 0xFFFF;
         RTPHead.writeUInt32BE(this.timestamp, 4);
@@ -82,12 +82,19 @@ class ClientSRTPSocket {
         this.options = options;
         this.sequence = this.randomNBit(16);
         this.timestamp = this.randomNBit(32);
+        this._nonceSize = this.randomNBit(32);
+        [this._RTP_HEAD[0], this._RTP_HEAD[1]] = [0x80, 0x78];
     }
     ;
-    packet = (packet) => {
-        const mode = ClientSRTPSocket.mode;
+    packet = (frame) => {
         const RTPHead = this.header;
-        const nonce = this.nonce;
+        const nonce = this.nonceSize;
+        return this.decodeAudioBuffer(RTPHead, frame, nonce);
+    };
+    decodeAudioBuffer = (RTPHead, packet, nonce) => {
+        const mode = ClientSRTPSocket.mode;
+        if (!nonce)
+            nonce = this.nonceSize;
         const nonceBuffer = nonce.subarray(0, 4);
         if (mode === "aead_aes256_gcm_rtpsize") {
             const cipher = node_crypto_1.default.createCipheriv("aes-256-gcm", this.options.key, nonce, { authTagLength: 16 });
@@ -111,11 +118,12 @@ class ClientSRTPSocket {
         return rand % max;
     };
     destroy = () => {
+        this._nonceSize = null;
         this._nonce = null;
-        this._nonceBuffer = null;
         this.timestamp = null;
         this.sequence = null;
         this.options = null;
+        this._RTP_HEAD = null;
     };
 }
 exports.ClientSRTPSocket = ClientSRTPSocket;

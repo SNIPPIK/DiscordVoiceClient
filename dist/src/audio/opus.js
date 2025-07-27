@@ -6,14 +6,12 @@ const emitter_1 = require("../emitter");
 const OGG_MAGIC = Buffer.from("OggS");
 exports.SILENT_FRAME = Buffer.from([0xF8, 0xFF, 0xFE]);
 exports.OPUS_FRAME_SIZE = 20;
-const EMPTY_FRAME = Buffer.alloc(0);
+const EMPTY_FRAME = Buffer.alloc(4);
 class BaseEncoder extends emitter_1.TypedEmitter {
-    _head_found = false;
-    _tags_found = false;
     _first = true;
     _buffer = EMPTY_FRAME;
     parseAvailablePages = (chunk) => {
-        this._buffer = Buffer.concat([this._buffer, chunk]);
+        this._buffer = chunk;
         const size = this._buffer.length;
         let offset = 0;
         while (offset + 27 <= size) {
@@ -33,12 +31,12 @@ class BaseEncoder extends emitter_1.TypedEmitter {
             if (offset + fullPageLength > size)
                 break;
             const payload = this._buffer.subarray(offset + headerLength, offset + fullPageLength);
-            this.extractPackets(segmentTable, payload);
+            this._extractPackets(segmentTable, payload);
             offset += fullPageLength;
         }
         this._buffer = this._buffer.subarray(offset);
     };
-    extractPackets = (segmentTable, payload) => {
+    _extractPackets = (segmentTable, payload) => {
         let currentPacket = [], payloadOffset = 0;
         for (const segmentLength of segmentTable) {
             const segment = payload.subarray(payloadOffset, payloadOffset + segmentLength);
@@ -47,29 +45,26 @@ class BaseEncoder extends emitter_1.TypedEmitter {
             if (segmentLength < 255) {
                 const packet = Buffer.concat(currentPacket);
                 currentPacket = [];
-                if (packet.length < 5)
+                if (isOpusHead(packet)) {
+                    this.emit("head", segment);
                     continue;
-                else if (!this._head_found) {
-                    if (isOpusHead(packet)) {
-                        this._head_found = true;
-                        this.emit("head", segment);
-                        continue;
-                    }
                 }
-                else if (!this._tags_found) {
-                    if (isOpusTags(packet)) {
-                        this._tags_found = true;
-                        this.emit("tags", segment);
-                        continue;
-                    }
+                else if (isOpusTags(packet)) {
+                    this.emit("tags", segment);
+                    continue;
                 }
-                if (this._first) {
-                    this.emit("frame", exports.SILENT_FRAME);
-                    this._first = false;
-                }
-                this.emit("frame", packet);
+                this._choiceFrame(packet);
             }
         }
+    };
+    _choiceFrame = (frame) => {
+        if (this._first) {
+            this.emit("frame", exports.SILENT_FRAME);
+            this.emit("frame", exports.SILENT_FRAME);
+            this.emit("frame", exports.SILENT_FRAME);
+            this._first = false;
+        }
+        this.emit("frame", frame);
     };
     emitDestroy() {
         this.emit("frame", exports.SILENT_FRAME);
