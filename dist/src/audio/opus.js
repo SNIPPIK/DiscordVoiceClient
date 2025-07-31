@@ -11,30 +11,33 @@ class BaseEncoder extends emitter_1.TypedEmitter {
     _first = true;
     _buffer = EMPTY_FRAME;
     parseAvailablePages = (chunk) => {
-        this._buffer = chunk;
-        const size = this._buffer.length;
+        this._buffer = Buffer.concat([this._buffer, chunk]);
         let offset = 0;
-        while (offset + 27 <= size) {
-            const magic = this._buffer.subarray(offset, offset + 4);
-            if (!magic.equals(OGG_MAGIC)) {
-                this.emit("error", Error(`capture_pattern is not ${OGG_MAGIC}`));
-                break;
+        while (offset + 27 <= this._buffer.length) {
+            if (!this._buffer.subarray(offset, offset + 4).equals(OGG_MAGIC)) {
+                const next = this._buffer.indexOf(OGG_MAGIC, offset + 1);
+                if (next === -1)
+                    break;
+                offset = next;
+                continue;
             }
+            if (offset + 27 > this._buffer.length)
+                break;
             const pageSegments = this._buffer.readUInt8(offset + 26);
-            const headerLength = pageSegments + 27;
-            if (offset + headerLength > size)
+            const segmentTableEnd = offset + 27 + pageSegments;
+            if (segmentTableEnd > this._buffer.length)
                 break;
-            const segmentOffset = offset + 27;
-            const segmentTable = this._buffer.subarray(segmentOffset, segmentOffset + pageSegments);
-            const totalSegmentLength = segmentTable.reduce((sum, val) => sum + val, 0);
-            const fullPageLength = headerLength + totalSegmentLength;
-            if (offset + fullPageLength > size)
+            const segmentTable = this._buffer.subarray(offset + 27, segmentTableEnd);
+            const totalSegmentLength = segmentTable.reduce((a, b) => a + b, 0);
+            const fullPageEnd = segmentTableEnd + totalSegmentLength;
+            if (fullPageEnd > this._buffer.length)
                 break;
-            const payload = this._buffer.subarray(offset + headerLength, offset + fullPageLength);
+            const payload = this._buffer.subarray(segmentTableEnd, fullPageEnd);
             this._extractPackets(segmentTable, payload);
-            offset += fullPageLength;
+            offset = fullPageEnd;
         }
-        this._buffer = this._buffer.subarray(offset);
+        if (offset > 0)
+            this._buffer = this._buffer.subarray(offset);
     };
     _extractPackets = (segmentTable, payload) => {
         let currentPacket = [], payloadOffset = 0;
@@ -59,8 +62,6 @@ class BaseEncoder extends emitter_1.TypedEmitter {
     };
     _choiceFrame = (frame) => {
         if (this._first) {
-            this.emit("frame", exports.SILENT_FRAME);
-            this.emit("frame", exports.SILENT_FRAME);
             this.emit("frame", exports.SILENT_FRAME);
             this._first = false;
         }
